@@ -44,6 +44,7 @@ function makeContext(overrides: {
     chat: { type: overrides.chatType ?? 'private' },
     reply: vi.fn().mockResolvedValue(undefined),
     replyWithChatAction: vi.fn().mockResolvedValue(undefined),
+    react: vi.fn().mockResolvedValue(true),
   } as unknown as Context;
 }
 
@@ -130,6 +131,9 @@ describe('registerTelegramHandlers', () => {
       agentCore,
       sessionManager,
       logger,
+      userSettings: {
+        getModel: vi.fn().mockReturnValue(undefined),
+      } as unknown as import('../../src/settings/UserSettingsService.js').UserSettingsService,
     });
   });
 
@@ -210,6 +214,78 @@ describe('registerTelegramHandlers', () => {
     expect(ctx.reply).toHaveBeenCalledWith(
       expect.stringContaining('kesalahan'),
     );
+  });
+
+  it('sends a processing reaction on authorized text messages', async () => {
+    const ctx = makeContext({ userId: 123, text: 'cek RAM VPS' });
+    const textHandler = fakeBot.events.get('message:text');
+    await textHandler!(ctx);
+    expect(ctx.react).toHaveBeenCalledWith('👀');
+  });
+
+  it('does not send a processing reaction to unauthorized users', async () => {
+    const ctx = makeContext({ userId: 999, text: 'hello' });
+    const textHandler = fakeBot.events.get('message:text');
+    await textHandler!(ctx);
+    expect(ctx.react).not.toHaveBeenCalled();
+  });
+
+  it('continues processing when the reaction fails', async () => {
+    const ctx = makeContext({ userId: 123, text: 'cek RAM VPS' });
+    (ctx.react as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('reaction blocked'));
+    const textHandler = fakeBot.events.get('message:text');
+    await textHandler!(ctx);
+    expect(ctx.react).toHaveBeenCalledWith('👀');
+    expect(agentCore.run).toHaveBeenCalled();
+    expect(ctx.reply).toHaveBeenCalledWith('Done');
+  });
+
+  it('formats system information responses with HTML', async () => {
+    const systemJson = JSON.stringify({
+      hostname: 'armbian',
+      platform: 'linux',
+      architecture: 'arm64',
+      release: '6.18.53-ophub',
+      cpuCount: 4,
+      memoryTotal: 2_052_657_152,
+      uptime: 3960,
+    });
+    (agentCore.run as ReturnType<typeof vi.fn>).mockResolvedValue({
+      response: systemJson,
+      sessionId: 10,
+      iterations: 1,
+      toolCalls: 1,
+      usage: undefined,
+      finishReason: 'completed',
+    });
+    const ctx = makeContext({ userId: 123, text: 'cek server' });
+    const textHandler = fakeBot.events.get('message:text');
+    await textHandler!(ctx);
+    const replyCalls = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls;
+    expect(replyCalls[0][0]).toContain('Server Information');
+    expect(replyCalls[0][1]).toEqual({ parse_mode: 'HTML' });
+  });
+
+  it('uses the per-user preferred model when one is set', async () => {
+    const getModel = vi.fn().mockReturnValue('user-model');
+    registerTelegramHandlers(bot, {
+      config: makeConfig(),
+      agentCore,
+      sessionManager,
+      logger,
+      userSettings: { getModel } as unknown as import('../../src/settings/UserSettingsService.js').UserSettingsService,
+    });
+
+    const ctx = makeContext({ userId: 123, text: 'hello' });
+    const textHandler = fakeBot.events.get('message:text');
+    await textHandler!(ctx);
+
+    expect(getModel).toHaveBeenCalledWith(1);
+    expect(agentCore.run).toHaveBeenCalledWith({
+      userId: 1,
+      sessionId: 10,
+      message: 'hello',
+    });
   });
 });
 

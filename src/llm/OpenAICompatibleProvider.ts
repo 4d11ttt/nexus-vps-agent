@@ -20,6 +20,7 @@ import type {
   ToolCall,
   Usage,
 } from './types.js';
+import { getModelOverride } from './ModelContext.js';
 
 const openAIToolCallSchema = z.object({
   id: z.string(),
@@ -325,7 +326,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     });
 
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: getModelOverride() ?? this.model,
       messages,
     };
 

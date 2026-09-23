@@ -1,0 +1,315 @@
+import { describe, it, expect } from 'vitest';
+import { TelegramFormatter } from '../../src/telegram/TelegramFormatter.js';
+
+const formatter = new TelegramFormatter();
+
+describe('TelegramFormatter', () => {
+  describe('system information', () => {
+    it('formats the prose system summary from the LLM', () => {
+      const input =
+        '**Hostname:** `armbian`\n' +
+        'Detail server:\n' +
+        '- Hostname: **armbian**\n' +
+        '- Platform: Linux, **arm64** (aarch64)\n' +
+        '- Kernel: **6.18.53-ophub**\n' +
+        '- CPU: 4 core\n' +
+        '- RAM: 1.87 GiB\n' +
+        '- Uptime: 66 menit';
+
+      const chunks = formatter.formatSystemInfo(input);
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('🖥️');
+      expect(html).toContain('<b>Server Information</b>');
+      expect(html).toContain('<code>armbian</code>');
+      expect(html).toContain('<b>Identity</b>');
+      expect(html).toContain('<b>Hardware</b>');
+      expect(html).toContain('<b>Runtime</b>');
+      expect(html).toContain('✓ <i>Selesai.</i>');
+    });
+
+    it('formats raw system_info tool JSON', () => {
+      const input = JSON.stringify({
+        hostname: 'armbian',
+        platform: 'linux',
+        architecture: 'arm64',
+        release: '6.18.53-ophub',
+        version: '#1 SMP',
+        cpuCount: 4,
+        memoryTotal: 2_052_657_152,
+        uptime: 3960,
+      });
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed', toolCalls: 1 });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('🖥️ <b>Server Information</b>');
+      expect(html).toContain('<code>armbian</code>');
+      expect(html).toContain('<code>4 cores</code>');
+      expect(html).toContain('<code>1h 06m</code>');
+    });
+
+    it('omits optional fields that are missing', () => {
+      const input = JSON.stringify({ hostname: 'box', platform: 'linux', architecture: 'x64', release: '5.0' });
+      const chunks = formatter.formatSystemInfo(input);
+      const html = chunks[0].text;
+      expect(html).not.toContain('CPU');
+      expect(html).not.toContain('RAM');
+      expect(html).toContain('<code>box</code>');
+    });
+  });
+
+  describe('resources', () => {
+    it('formats raw system_resources tool JSON', () => {
+      const input = JSON.stringify({
+        memoryTotal: 2_052_657_152,
+        memoryFree: 1_757_184_000,
+        memoryUsed: 295_473_152,
+        cpuCount: 4,
+        loadAverage: [1.17, 0.81, 0.62],
+        uptime: 3960,
+      });
+
+      const chunks = formatter.formatResources(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('📊 <b>System Resources</b>');
+      expect(html).toContain('<b>RAM</b>');
+      expect(html).toContain('<b>14%</b>');
+      expect(html).toContain('<code>Load 1m  1.17</code>');
+      expect(html).toContain('<code>4 cores</code>');
+    });
+  });
+
+  describe('speedtest', () => {
+    it('formats speedtest JSON', () => {
+      const input = JSON.stringify({
+        download: '42.31 Mbps',
+        upload: '18.72 Mbps',
+        ping: '24 ms',
+        jitter: '3 ms',
+        server: 'Jakarta',
+      });
+
+      const chunks = formatter.formatSpeedtest(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('⚡ <b>Speedtest</b>');
+      expect(html).toContain('<pre>');
+      expect(html).toContain('Download   42.31 Mbps');
+      expect(html).toContain('<b>Server</b>');
+      expect(html).toContain('<code>Jakarta</code>');
+    });
+  });
+
+  describe('shell output', () => {
+    it('formats shell tool JSON with command and output', () => {
+      const input = JSON.stringify({
+        command: 'uname -a',
+        stdout: 'Linux armbian 6.18.53-ophub ...',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 12,
+        timedOut: false,
+      });
+
+      const chunks = formatter.formatShell(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('🔧 <b>Command</b>');
+      expect(html).toContain('<pre>uname -a</pre>');
+      expect(html).toContain('<b>Output</b>');
+      expect(html).toContain('<pre>Linux armbian 6.18.53-ophub ...</pre>');
+    });
+
+    it('splits very long shell output into multiple messages', () => {
+      const input = JSON.stringify({
+        command: 'cat big.log',
+        stdout: 'line\n'.repeat(2000),
+        stderr: '',
+        exitCode: 0,
+      });
+
+      const chunks = formatter.formatShell(input);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+        expect(chunk.parseMode).toBe('HTML');
+        expect(chunk.text.length).toBeLessThanOrEqual(4096);
+      }
+    });
+
+  describe('filesystem', () => {
+    it('formats filesystem list JSON as a tree', () => {
+      const input = JSON.stringify({
+        path: '/opt/nexus-vps-agent',
+        items: [
+          { name: 'src', type: 'directory' },
+          { name: 'data', type: 'directory' },
+          { name: 'package.json', type: 'file' },
+          { name: 'README.md', type: 'file' },
+        ],
+      });
+
+      const chunks = formatter.formatFilesystem(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('📁 <b>Files</b>');
+      expect(html).toContain('<pre>');
+      expect(html).toContain('/opt/nexus-vps-agent/');
+      expect(html).toContain('src/');
+      expect(html).toContain('README.md');
+      expect(html).toMatch(/[├└]──/);
+    });
+  });
+
+  describe('processes', () => {
+    it('formats process list JSON', () => {
+      const input = JSON.stringify({
+        count: 2,
+        processes: [
+          { pid: 15210, command: 'node', memory: 50_331_648 },
+          { pid: 1, command: 'systemd', memory: 12_288_000 },
+        ],
+      });
+
+      const chunks = formatter.formatProcesses(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('⚙️ <b>Processes</b>');
+      expect(html).toContain('<pre>');
+      expect(html).toContain('PID     MEM');
+      expect(html).toContain('15210');
+      expect(html).toContain('node');
+    });
+  });
+
+  describe('package manager', () => {
+    it('formats apt update JSON', () => {
+      const input = JSON.stringify({
+        action: 'update',
+        success: true,
+        exitCode: 0,
+        stdout: 'Hit:1 http://deb.debian.org/debian bookworm InRelease',
+        stderr: '',
+      });
+
+      const chunks = formatter.formatPackageManager(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('📦 <b>Package Manager</b>');
+      expect(html).toContain('<code>apt update</code>');
+      expect(html).toContain('<b>Status</b>');
+      expect(html).toContain('<code>Success</code>');
+    });
+  });
+
+  describe('errors', () => {
+    it('formats error responses safely', () => {
+      const chunks = formatter.formatError('Command not found: foobar');
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).toContain('✕ <b>Error</b>');
+      expect(html).toContain('<pre>Command not found: foobar</pre>');
+      expect(html).toContain('✕ <i>Gagal memproses permintaan.</i>');
+    });
+  });
+
+  describe('HTML safety', () => {
+    it('escapes HTML special characters in values', () => {
+      const input = JSON.stringify({
+        hostname: 'box <script>',
+        platform: 'linux & more',
+        architecture: 'x64 "quoted"',
+        release: '5.0',
+      });
+      const chunks = formatter.formatSystemInfo(input);
+      const html = chunks[0].text;
+      expect(html).toContain('&lt;script&gt;');
+      expect(html).toContain('&amp;');
+      expect(html).toContain('&quot;quoted&quot;');
+      expect(html).not.toContain('<script>');
+    });
+
+    it('escapes shell output containing angle brackets', () => {
+      const input = JSON.stringify({
+        command: 'echo',
+        stdout: 'a < b > c',
+        stderr: '',
+        exitCode: 0,
+      });
+      const chunks = formatter.formatShell(input);
+      const html = chunks[0].text;
+      expect(html).toContain('&lt; b &gt;');
+      expect(html).not.toContain('a < b > c');
+    });
+  });
+
+  describe('generic responses', () => {
+    it('keeps plain conversational text unchanged', () => {
+      const chunks = formatter.formatResponse('nginx belum terpasang.');
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].text).toBe('nginx belum terpasang.');
+      expect(chunks[0].parseMode).toBeUndefined();
+    });
+
+    it('converts markdown to HTML when present', () => {
+      const input = '**Done.**\n\n- nginx installed\n- service running\n\nUse `systemctl status nginx`.';
+      const chunks = formatter.formatGeneric(input);
+      const html = chunks[0].text;
+
+      expect(chunks[0].parseMode).toBe('HTML');
+      expect(html).toContain('<b>Done.</b>');
+      expect(html).toContain('• nginx installed');
+      expect(html).toContain('<code>systemctl status nginx</code>');
+    });
+
+    it('converts markdown code blocks to pre tags', () => {
+      const input = 'Example:\n```\nuname -a\n```';
+      const chunks = formatter.formatGeneric(input);
+      const html = chunks[0].text;
+      expect(html).toContain('<pre>uname -a</pre>');
+    });
+  });
+
+  describe('long responses', () => {
+    it('splits a long generic response without corrupting HTML', () => {
+      const input = '**Start** ' + 'word '.repeat(2000);
+      const chunks = formatter.formatGeneric(input);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+        expect(chunk.parseMode).toBe('HTML');
+        expect(chunk.text.length).toBeLessThanOrEqual(4096);
+      }
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns a default message for empty input', () => {
+      const chunks = formatter.formatResponse('');
+      expect(chunks[0].text).toBe('Agen tidak memberikan respons.');
+    });
+
+    it('handles JSON fields with null or undefined values', () => {
+      const input = JSON.stringify({
+        hostname: 'box',
+        platform: 'linux',
+        architecture: null,
+        release: undefined,
+        cpuCount: 0,
+      });
+      const chunks = formatter.formatSystemInfo(input);
+      const html = chunks[0].text;
+      expect(html).toContain('<code>box</code>');
+      expect(html).toMatch(/linux|null/);
+    });
+  });
+});
+});

@@ -1,12 +1,19 @@
 import { Bot } from 'grammy';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
+import type { Database } from '../database/Database.js';
 import type { AgentCore } from '../agent/AgentCore.js';
 import type { SessionManager } from '../agent/SessionManager.js';
 import type { AuditService } from '../audit/AuditService.js';
+import type { MemoryManager } from '../memory/MemoryManager.js';
+import type { SkillManager } from '../skills/SkillManager.js';
+import type { Scheduler } from '../scheduler/Scheduler.js';
+import type { ModelCatalog } from '../llm/ModelCatalog.js';
+import type { UserSettingsService } from '../settings/UserSettingsService.js';
 import { registerTelegramHandlers } from './handlers.js';
 import { isAuthorized } from './authorization.js';
 import { splitMessage } from './formatter.js';
+import { ControlPanel } from './ControlPanel.js';
 
 export interface TelegramBotDeps {
   config: Config;
@@ -14,6 +21,12 @@ export interface TelegramBotDeps {
   sessionManager: SessionManager;
   logger: Logger;
   audit?: AuditService;
+  db?: Database;
+  modelCatalog?: ModelCatalog;
+  userSettings?: UserSettingsService;
+  memoryManager?: MemoryManager;
+  skillManager?: SkillManager;
+  scheduler?: Scheduler;
 }
 
 /**
@@ -37,13 +50,36 @@ export class TelegramBot {
     this.bot = new Bot(token);
     this.allowedUserIds = deps.config.TELEGRAM_ALLOWED_USER_IDS ?? [];
     this.logger = deps.logger.child({ component: 'TelegramBot' });
+
     registerTelegramHandlers(this.bot, {
       config: deps.config,
       agentCore: deps.agentCore,
       sessionManager: deps.sessionManager,
       logger: this.logger,
       audit: deps.audit,
+      userSettings: deps.userSettings,
     });
+
+    if (
+      deps.db &&
+      deps.modelCatalog &&
+      deps.userSettings &&
+      deps.memoryManager &&
+      deps.skillManager
+    ) {
+      const controlPanel = new ControlPanel({
+        config: deps.config,
+        modelCatalog: deps.modelCatalog,
+        userSettings: deps.userSettings,
+        memoryManager: deps.memoryManager,
+        skillManager: deps.skillManager,
+        sessionManager: deps.sessionManager,
+        scheduler: deps.scheduler,
+        audit: deps.audit,
+        logger: this.logger,
+      });
+      controlPanel.register(this.bot);
+    }
   }
 
   /**

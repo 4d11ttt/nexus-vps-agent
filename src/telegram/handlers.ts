@@ -4,8 +4,10 @@ import type { AgentCore } from '../agent/AgentCore.js';
 import type { SessionManager } from '../agent/SessionManager.js';
 import type { Config } from '../config.js';
 import type { AuditService } from '../audit/AuditService.js';
+import type { UserSettingsService } from '../settings/UserSettingsService.js';
+import { withModelOverride } from '../llm/ModelContext.js';
 import { isAuthorizedContext } from './authorization.js';
-import { splitMessage } from './formatter.js';
+import { TelegramFormatter } from './TelegramFormatter.js';
 import { resolveAgentUser, resolveSession, getTelegramUserMeta } from './session.js';
 
 export interface TelegramHandlersDeps {
@@ -14,7 +16,10 @@ export interface TelegramHandlersDeps {
   sessionManager: SessionManager;
   logger: Logger;
   audit?: AuditService;
+  userSettings?: UserSettingsService;
 }
+
+const formatter = new TelegramFormatter();
 
 const UNAUTHORIZED_MESSAGE =
   'You are not authorized to use this bot.';
@@ -31,6 +36,24 @@ const HELP_MESSAGE =
 
 function isPrivateChat(ctx: Context): boolean {
   return ctx.chat?.type === 'private';
+}
+
+/**
+ * Best-effort "processing" reaction on the user's message.
+ *
+ * If the reaction cannot be sent (unsupported chat, API error, or the context
+ * does not expose the helper), the failure is logged and processing continues
+ * normally. The user's request must never fail because of a reaction.
+ */
+async function sendProcessingReaction(ctx: Context, logger: Logger): Promise<void> {
+  if (typeof ctx.react !== 'function') {
+    return;
+  }
+  try {
+    await ctx.react('👀');
+  } catch (error) {
+    logger.warn({ error }, 'Failed to send processing reaction');
+  }
 }
 
 async function sendUnauthorized(
@@ -51,7 +74,7 @@ async function sendUnauthorized(
 }
 
 export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlersDeps): void {
-  const { config, agentCore, sessionManager, logger, audit } = deps;
+  const { config, agentCore, sessionManager, logger, audit, userSettings } = deps;
   const allowedUserIds = config.TELEGRAM_ALLOWED_USER_IDS ?? [];
 
   bot.command('start', async (ctx) => {
@@ -117,6 +140,7 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlersDeps): 
 
     try {
       await ctx.replyWithChatAction('typing');
+      await sendProcessingReaction(ctx, logger);
 
       const user = await resolveAgentUser(
         meta.telegramUserId,
@@ -132,20 +156,33 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlersDeps): 
         metadata: { telegramUserId: meta.telegramUserId, sessionId: session.id },
       });
 
-      const result = await agentCore.run({
-        userId: user.id,
-        sessionId: session.id,
-        message: text,
-      });
+      const preferredModel = userSettings?.getModel(user.id);
+      const runAgent = () =>
+        agentCore.run({
+          userId: user.id,
+          sessionId: session.id,
+          message: text,
+        });
 
-      const chunks = splitMessage(result.response);
+      const result = preferredModel
+        ? await withModelOverride(preferredModel, runAgent)
+        : await runAgent();
+
+      const chunks = formatter.formatResponse(result.response, {
+        finishReason: result.finishReason,
+        toolCalls: result.toolCalls,
+      });
       if (chunks.length === 0) {
         await ctx.reply('Agen tidak memberikan respons.');
         return;
       }
 
       for (const chunk of chunks) {
-        await ctx.reply(chunk);
+        if (chunk.parseMode) {
+          await ctx.reply(chunk.text, { parse_mode: chunk.parseMode });
+        } else {
+          await ctx.reply(chunk.text);
+        }
       }
 
       logger.info(

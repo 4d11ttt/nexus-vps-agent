@@ -5,6 +5,7 @@ import { AgentCore } from './agent/AgentCore.js';
 import { SessionManager } from './agent/SessionManager.js';
 import { ToolRegistry } from './agent/ToolRegistry.js';
 import { OpenAICompatibleProvider } from './llm/OpenAICompatibleProvider.js';
+import { ModelCatalog } from './llm/ModelCatalog.js';
 import { registerCoreTools } from './tools/index.js';
 import { TelegramBot } from './telegram/TelegramBot.js';
 import { MemoryManager } from './memory/MemoryManager.js';
@@ -14,6 +15,7 @@ import { createSkillTools } from './skills/tools.js';
 import { Scheduler } from './scheduler/Scheduler.js';
 import { createSchedulerTools } from './scheduler/tools.js';
 import { AuditService } from './audit/AuditService.js';
+import { UserSettingsService } from './settings/UserSettingsService.js';
 import { AgentError, normalizeError } from './errors.js';
 
 async function main(): Promise<void> {
@@ -52,6 +54,8 @@ async function main(): Promise<void> {
   let agentCore: AgentCore | undefined;
   let sessionManager: SessionManager | undefined;
   let registry: ToolRegistry | undefined;
+  let memoryManager: MemoryManager | undefined;
+  let skillManager: SkillManager | undefined;
 
   if (needsLlm) {
     // 6. Initialize LLM provider.
@@ -62,12 +66,12 @@ async function main(): Promise<void> {
     registerCoreTools(registry);
 
     // 8. Initialize memory and skills; register their tools.
-    const memoryManager = new MemoryManager({ db, config, logger });
+    memoryManager = new MemoryManager({ db, config, logger });
     for (const tool of createMemoryTools(memoryManager)) {
       registry.register(tool);
     }
 
-    const skillManager = new SkillManager({ db, config, logger });
+    skillManager = new SkillManager({ db, config, logger });
     skillManager.discover();
     for (const tool of createSkillTools(skillManager)) {
       registry.register(tool);
@@ -88,8 +92,33 @@ async function main(): Promise<void> {
     });
   }
 
-  // 10. Initialize Telegram if enabled.
+  // 10. Shared services for the Telegram control panel.
+  const userSettings = new UserSettingsService(db);
+  const modelCatalog = new ModelCatalog({ config, logger });
+
+  // 11. Initialize scheduler if enabled.
   let telegramBot: TelegramBot | undefined;
+  let scheduler: Scheduler | undefined;
+
+  if (config.SCHEDULER_ENABLED && agentCore && registry) {
+    scheduler = new Scheduler({
+      db,
+      config,
+      logger,
+      runner: agentCore,
+      notifier: {
+        notify: async (telegramUserId: number, text: string) => {
+          await telegramBot?.sendToUser(telegramUserId, text);
+        },
+      },
+      audit,
+    });
+    for (const tool of createSchedulerTools(scheduler)) {
+      registry.register(tool);
+    }
+  }
+
+  // 12. Initialize Telegram if enabled.
   if (config.TELEGRAM_ENABLED && agentCore && sessionManager) {
     telegramBot = new TelegramBot({
       config,
@@ -97,28 +126,13 @@ async function main(): Promise<void> {
       sessionManager,
       logger,
       audit,
-    });
-  }
-
-  // 11. Initialize scheduler if enabled.
-  let scheduler: Scheduler | undefined;
-  if (config.SCHEDULER_ENABLED && agentCore && registry) {
-    scheduler = new Scheduler({
       db,
-      config,
-      logger,
-      runner: agentCore,
-      notifier: telegramBot
-        ? {
-            notify: (telegramUserId: number, text: string) =>
-              telegramBot.sendToUser(telegramUserId, text),
-          }
-        : undefined,
-      audit,
+      modelCatalog,
+      userSettings,
+      memoryManager,
+      skillManager,
+      scheduler,
     });
-    for (const tool of createSchedulerTools(scheduler)) {
-      registry.register(tool);
-    }
   }
 
   // 12. Register graceful shutdown.
