@@ -1,0 +1,169 @@
+import type { Bot, Context } from 'grammy';
+import type { Logger } from 'pino';
+import type { AgentCore } from '../agent/AgentCore.js';
+import type { SessionManager } from '../agent/SessionManager.js';
+import type { Config } from '../config.js';
+import type { AuditService } from '../audit/AuditService.js';
+import { isAuthorizedContext } from './authorization.js';
+import { splitMessage } from './formatter.js';
+import { resolveAgentUser, resolveSession, getTelegramUserMeta } from './session.js';
+
+export interface TelegramHandlersDeps {
+  config: Config;
+  agentCore: AgentCore;
+  sessionManager: SessionManager;
+  logger: Logger;
+  audit?: AuditService;
+}
+
+const UNAUTHORIZED_MESSAGE =
+  'You are not authorized to use this bot.';
+
+const START_MESSAGE =
+  'Halo! Saya NEXUS VPS Agent, agen autonomous untuk VPS Debian Anda. Kirim pesan natural language untuk meminta tugas teknis, contoh: "cek RAM VPS" atau "install nginx".';
+
+const HELP_MESSAGE =
+  'Cara menggunakan NEXUS VPS Agent:\n' +
+  '- Kirim pesan teks biasa untuk memberi tugas kepada agen.\n' +
+  '- Agen akan merencanakan, menjalankan tool internal, dan memverifikasi hasil.\n' +
+  '- Perintah tersedia: /start, /help, /status.\n\n' +
+  'Tool seperti shell, filesystem, dan package manager dipilih otomatis oleh agen, bukan melalui perintah Telegram.';
+
+function isPrivateChat(ctx: Context): boolean {
+  return ctx.chat?.type === 'private';
+}
+
+async function sendUnauthorized(
+  ctx: Context,
+  logger: Logger,
+  audit?: AuditService,
+): Promise<void> {
+  logger.warn(
+    { telegramUserId: ctx.from?.id, chatType: ctx.chat?.type },
+    'Unauthorized Telegram access attempt',
+  );
+  audit?.record({
+    userId: null,
+    eventType: 'unauthorized_access',
+    metadata: { telegramUserId: ctx.from?.id, chatType: ctx.chat?.type },
+  });
+  await ctx.reply(UNAUTHORIZED_MESSAGE);
+}
+
+export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlersDeps): void {
+  const { config, agentCore, sessionManager, logger, audit } = deps;
+  const allowedUserIds = config.TELEGRAM_ALLOWED_USER_IDS ?? [];
+
+  bot.command('start', async (ctx) => {
+    if (!isAuthorizedContext(ctx, allowedUserIds)) {
+      await sendUnauthorized(ctx, logger, audit);
+      return;
+    }
+    if (!isPrivateChat(ctx)) return;
+    logger.info({ telegramUserId: ctx.from?.id }, '/start command');
+    await ctx.reply(START_MESSAGE);
+  });
+
+  bot.command('help', async (ctx) => {
+    if (!isAuthorizedContext(ctx, allowedUserIds)) {
+      await sendUnauthorized(ctx, logger, audit);
+      return;
+    }
+    if (!isPrivateChat(ctx)) return;
+    logger.info({ telegramUserId: ctx.from?.id }, '/help command');
+    await ctx.reply(HELP_MESSAGE);
+  });
+
+  bot.command('status', async (ctx) => {
+    if (!isAuthorizedContext(ctx, allowedUserIds)) {
+      await sendUnauthorized(ctx, logger, audit);
+      return;
+    }
+    if (!isPrivateChat(ctx)) return;
+    logger.info({ telegramUserId: ctx.from?.id }, '/status command');
+    const status =
+      `Aktif.\n` +
+      `Node env: ${config.NODE_ENV}\n` +
+      `Log level: ${config.LOG_LEVEL}\n` +
+      `Database: ${config.DATABASE_PATH}\n` +
+      `Model: ${config.LLM_MODEL ?? 'not configured'}`;
+    await ctx.reply(status);
+  });
+
+  bot.on('message:text', async (ctx) => {
+    if (!isAuthorizedContext(ctx, allowedUserIds)) {
+      await sendUnauthorized(ctx, logger, audit);
+      return;
+    }
+    if (!isPrivateChat(ctx)) {
+      logger.debug(
+        { chatType: ctx.chat?.type, telegramUserId: ctx.from?.id },
+        'Ignoring non-private message',
+      );
+      return;
+    }
+
+    const text = ctx.message.text;
+    const meta = getTelegramUserMeta(ctx);
+    if (meta.telegramUserId === undefined) {
+      logger.warn('Message without identifiable user');
+      return;
+    }
+
+    logger.info(
+      { telegramUserId: meta.telegramUserId, chatType: ctx.chat?.type },
+      'Telegram message received',
+    );
+
+    try {
+      await ctx.replyWithChatAction('typing');
+
+      const user = await resolveAgentUser(
+        meta.telegramUserId,
+        meta.username,
+        meta.displayName,
+        sessionManager,
+      );
+      const session = await resolveSession(user, sessionManager);
+
+      audit?.record({
+        userId: user.id,
+        eventType: 'session_start',
+        metadata: { telegramUserId: meta.telegramUserId, sessionId: session.id },
+      });
+
+      const result = await agentCore.run({
+        userId: user.id,
+        sessionId: session.id,
+        message: text,
+      });
+
+      const chunks = splitMessage(result.response);
+      if (chunks.length === 0) {
+        await ctx.reply('Agen tidak memberikan respons.');
+        return;
+      }
+
+      for (const chunk of chunks) {
+        await ctx.reply(chunk);
+      }
+
+      logger.info(
+        {
+          telegramUserId: meta.telegramUserId,
+          sessionId: session.id,
+          finishReason: result.finishReason,
+          iterations: result.iterations,
+        },
+        'Telegram response sent',
+      );
+    } catch (error) {
+      logger.error(
+        { error, telegramUserId: meta.telegramUserId },
+        'AgentCore run failed for Telegram message',
+      );
+      await ctx.reply('Maaf, terjadi kesalahan saat memproses permintaan Anda.');
+    }
+  });
+}
+

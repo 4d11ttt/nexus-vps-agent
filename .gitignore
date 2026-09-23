@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.tmp
+.vscode/
+.idea/
+
+# Database files
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+data/*.db
+data/*.db-*
+

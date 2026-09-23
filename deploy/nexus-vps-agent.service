@@ -1,0 +1,23 @@
+[Unit]
+Description=NEXUS VPS Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as root: root-level VPS access is intentional for this agent.
+User=root
+Group=root
+WorkingDirectory=/opt/nexus-vps-agent
+EnvironmentFile=/opt/nexus-vps-agent/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown on SIGINT/SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# Security hardening (no secrets in the unit file itself).
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
