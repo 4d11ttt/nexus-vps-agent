@@ -128,7 +128,10 @@ export class ControlPanel {
         await this.showAudit(ctx);
         break;
       case 'channels':
-        await this.showChannels(ctx);
+        await this.showChannels(ctx, action.sub);
+        break;
+      case 'refresh':
+        await this.showMainMenu(ctx);
         break;
       case 'about':
         await this.showAbout(ctx);
@@ -205,15 +208,31 @@ export class ControlPanel {
   private async showMainMenu(ctx: Context): Promise<void> {
     const text =
       '⚡ <b>NEXUS VPS</b>\n\n' +
-      'Pilih kategori di bawah untuk mengontrol agen.';
+      '<b>Agent</b>\n' +
+      'Model · Provider\n\n' +
+      '<b>Intelligence</b>\n' +
+      'Memory · Skills\n\n' +
+      '<b>Server</b>\n' +
+      'System · Resources · Processes · Storage · Network\n\n' +
+      '<b>Channels</b>\n' +
+      'Telegram · WebSocket\n\n' +
+      '<b>Automation</b>\n' +
+      'Scheduler · Jobs\n\n' +
+      '<b>Configuration</b>\n' +
+      'Settings\n\n' +
+      '<b>Monitoring</b>\n' +
+      'Logs · Audit';
 
     const keyboard = new InlineKeyboard()
+      // Agent
       .text('🤖 Model', 'menu:model')
       .text('🔌 Provider', 'menu:provider')
       .row()
+      // Intelligence
       .text('🧠 Memory', 'menu:memory')
       .text('🛠️ Skills', 'menu:skills')
       .row()
+      // Server
       .text('🖥️ System', 'menu:system')
       .text('📊 Resources', 'menu:resources')
       .row()
@@ -221,15 +240,24 @@ export class ControlPanel {
       .text('💾 Storage', 'menu:storage')
       .row()
       .text('🌐 Network', 'menu:network')
-      .text('📡 Channels', 'menu:channels')
       .row()
+      // Channels
+      .text('📡 Telegram', 'menu:channels:telegram')
+      .text('🌐 WebSocket', 'menu:channels:websocket')
+      .row()
+      // Automation
       .text('⏰ Scheduler', 'menu:scheduler')
       .text('📋 Jobs', 'menu:jobs')
       .row()
+      // Configuration
       .text('⚙️ Settings', 'menu:settings')
-      .text('📋 Audit', 'menu:audit')
       .row()
-      .text('📝 Logs', 'menu:logs')
+      // Monitoring
+      .text('📜 Logs', 'menu:logs')
+      .text('🛡️ Audit', 'menu:audit')
+      .row()
+      // Footer
+      .text('🔄 Refresh', 'menu:refresh')
       .text('ℹ️ About', 'menu:about');
 
     if (ctx.callbackQuery) {
@@ -737,7 +765,7 @@ export class ControlPanel {
 
   private async showLogs(ctx: Context): Promise<void> {
     const text =
-      `📝 <b>Logs</b>\n\n` +
+      `📜 <b>Logs</b>\n\n` +
       `Log level: <code>${this.escape(this.deps.config.LOG_LEVEL)}</code>\n` +
       `Environment: <code>${this.escape(this.deps.config.NODE_ENV)}</code>\n\n` +
       `Lihat log di filesystem server atau konsol.`;
@@ -748,7 +776,7 @@ export class ControlPanel {
 
   private async showAudit(ctx: Context): Promise<void> {
     const text =
-      `📋 <b>Audit</b>\n\n` +
+      `🛡️ <b>Audit</b>\n\n` +
       `Audit events are persisted in the database.\n` +
       `Total events are available via server-side queries.`;
     const keyboard = new InlineKeyboard().add(this.backButton('main'));
@@ -760,14 +788,47 @@ export class ControlPanel {
   // Channels
   // ---------------------------------------------------------------------------
 
-  private async showChannels(ctx: Context): Promise<void> {
+  private async showChannels(ctx: Context, channel?: string): Promise<void> {
     const telegramStatus = this.deps.config.TELEGRAM_ENABLED ? '● Connected' : '○ Disabled';
     const wsStatus = '○ Not implemented';
+
+    if (channel === 'telegram') {
+      const text =
+        `📡 <b>Telegram</b>\n\n` +
+        `Status: ${telegramStatus}\n` +
+        `Allowed users: <code>${this.deps.config.TELEGRAM_ALLOWED_USER_IDS?.length ?? 0}</code>`;
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Channels', 'menu:channels')
+        .row()
+        .add(this.backButton('main'));
+      await this.editMenu(ctx, text, keyboard);
+      await this.answer(ctx);
+      return;
+    }
+
+    if (channel === 'websocket') {
+      const text =
+        `🌐 <b>WebSocket</b>\n\n` +
+        `Status: ${wsStatus}\n\n` +
+        `No WebSocket server is configured in this deployment.`;
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Channels', 'menu:channels')
+        .row()
+        .add(this.backButton('main'));
+      await this.editMenu(ctx, text, keyboard);
+      await this.answer(ctx);
+      return;
+    }
+
     const text =
       `📡 <b>Channels</b>\n\n` +
       `Telegram:\n${telegramStatus}\n\n` +
       `WebSocket:\n${wsStatus}`;
-    const keyboard = new InlineKeyboard().add(this.backButton('main'));
+    const keyboard = new InlineKeyboard()
+      .text('📡 Telegram', 'menu:channels:telegram')
+      .text('🌐 WebSocket', 'menu:channels:websocket')
+      .row()
+      .add(this.backButton('main'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
   }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Context } from 'grammy';
+import { Bot } from 'grammy';
 import { TelegramBot } from '../../src/telegram/TelegramBot.js';
 import type { Config } from '../../src/config.js';
 
@@ -7,16 +8,19 @@ vi.mock('grammy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('grammy')>();
 
   class FakeBot {
+    static order: string[] = [];
     commands = new Map<string, (ctx: Context) => Promise<void>>();
     events = new Map<string, (ctx: Context) => Promise<void>>();
     start = vi.fn().mockResolvedValue(undefined);
     stop = vi.fn().mockResolvedValue(undefined);
 
     command(name: string, handler: (ctx: Context) => Promise<void>) {
+      FakeBot.order.push(`command:${name}`);
       this.commands.set(name, handler);
     }
 
     on(event: string, handler: (ctx: Context) => Promise<void>) {
+      FakeBot.order.push(`event:${event}`);
       this.events.set(event, handler);
     }
   }
@@ -85,6 +89,44 @@ describe('TelegramBot', () => {
           logger: makeLogger(),
         }),
     ).toThrow('TELEGRAM_BOT_TOKEN');
+  });
+
+  it('registers ControlPanel commands before the generic message handler', () => {
+    const order = (Bot as unknown as { order: string[] }).order;
+    order.length = 0;
+
+    new TelegramBot({
+      config: makeConfig(),
+      agentCore: { run: vi.fn() } as unknown as import('../../src/agent/AgentCore.js').AgentCore,
+      sessionManager: {
+        ensureUser: vi.fn().mockResolvedValue({ id: 1 }),
+        findLatestActiveSession: vi.fn().mockResolvedValue({ id: 10 }),
+        getOrCreateSession: vi.fn().mockResolvedValue({ id: 10 }),
+      } as unknown as import('../../src/agent/SessionManager.js').SessionManager,
+      logger: makeLogger(),
+      db: {} as unknown as import('../../src/database/Database.js').Database,
+      modelCatalog: {
+        listModels: vi.fn(),
+        testConnection: vi.fn(),
+      } as unknown as import('../../src/llm/ModelCatalog.js').ModelCatalog,
+      userSettings: {
+        getModel: vi.fn(),
+        setModel: vi.fn(),
+      } as unknown as import('../../src/settings/UserSettingsService.js').UserSettingsService,
+      memoryManager: {
+        list: vi.fn(),
+      } as unknown as import('../../src/memory/MemoryManager.js').MemoryManager,
+      skillManager: {
+        list: vi.fn(),
+        discover: vi.fn(),
+        read: vi.fn(),
+      } as unknown as import('../../src/skills/SkillManager.js').SkillManager,
+    });
+
+    expect(order).toContain('command:menu');
+    expect(order).toContain('command:model');
+    expect(order.indexOf('command:menu')).toBeLessThan(order.indexOf('event:message:text'));
+    expect(order.indexOf('command:model')).toBeLessThan(order.indexOf('event:message:text'));
   });
 });
 

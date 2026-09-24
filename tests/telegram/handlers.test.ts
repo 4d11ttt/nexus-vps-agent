@@ -287,5 +287,16 @@ describe('registerTelegramHandlers', () => {
       message: 'hello',
     });
   });
+
+  it('ignores bot commands in the message:text handler', async () => {
+    const textHandler = fakeBot.events.get('message:text');
+    for (const text of ['/menu', '/model', '/start', '/help', '/status']) {
+      const ctx = makeContext({ userId: 123, text });
+      await textHandler!(ctx);
+      expect(ctx.react).not.toHaveBeenCalled();
+      expect(agentCore.run).not.toHaveBeenCalled();
+      expect(ctx.reply).not.toHaveBeenCalled();
+    }
+  });
 });
 

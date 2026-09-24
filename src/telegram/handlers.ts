@@ -39,6 +39,27 @@ function isPrivateChat(ctx: Context): boolean {
 }
 
 /**
+ * Detect Telegram bot commands.
+ *
+ * grammY's `message:text` matcher also matches command messages. Commands must
+ * be handled by their dedicated command handlers (e.g. ControlPanel /menu and
+ * /model) and must never fall through into AgentCore or receive the processing
+ * reaction.
+ */
+function isBotCommand(ctx: Context): boolean {
+  const entities = ctx.message?.entities;
+  if (entities?.some((entity) => entity.type === 'bot_command' && entity.offset === 0)) {
+    return true;
+  }
+  const text = ctx.message?.text?.trim();
+  if (!text) return false;
+  // Fallback for tests/adapters that do not populate entities: match the
+  // Telegram command shape including optional @bot suffix and arguments,
+  // not arbitrary text that merely starts with '/'.
+  return /^\/(?:[a-zA-Z0-9_]+)(?:@[\w]+)?(?:\s|$)/.test(text);
+}
+
+/**
  * Best-effort "processing" reaction on the user's message.
  *
  * If the reaction cannot be sent (unsupported chat, API error, or the context
@@ -123,6 +144,11 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlersDeps): 
         { chatType: ctx.chat?.type, telegramUserId: ctx.from?.id },
         'Ignoring non-private message',
       );
+      return;
+    }
+
+    if (isBotCommand(ctx)) {
+      logger.debug({ text: ctx.message.text }, 'Ignoring bot command in message:text handler');
       return;
     }
 

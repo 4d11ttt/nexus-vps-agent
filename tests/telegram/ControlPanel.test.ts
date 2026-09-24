@@ -132,12 +132,48 @@ describe('ControlPanel', () => {
     expect(bot.events.has('callback_query:data')).toBe(true);
   });
 
-  it('opens the main menu on /menu', async () => {
+  it('opens the main menu on /menu with all control center buttons', async () => {
     const ctx = makeContext({ userId: 123, text: '/menu' });
     const handler = bot.commands.get('menu')!;
     await handler(ctx);
     expect(ctx.reply).toHaveBeenCalledWith(
       expect.stringContaining('NEXUS VPS'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
+    );
+    const markup = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][1]?.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string }>>;
+    };
+    const labels = markup.inline_keyboard.flat().map((b) => b.text).join(' ');
+    for (const expected of [
+      'Model',
+      'Provider',
+      'Memory',
+      'Skills',
+      'System',
+      'Resources',
+      'Processes',
+      'Storage',
+      'Network',
+      'Telegram',
+      'WebSocket',
+      'Scheduler',
+      'Jobs',
+      'Settings',
+      'Logs',
+      'Audit',
+      'Refresh',
+      'About',
+    ]) {
+      expect(labels).toContain(expected);
+    }
+  });
+
+  it('opens the model menu on /model', async () => {
+    const ctx = makeContext({ userId: 123, text: '/model' });
+    const handler = bot.commands.get('model')!;
+    await handler(ctx);
+    expect(ctx.reply).toHaveBeenCalledWith(
+      expect.stringContaining('Model'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
   });

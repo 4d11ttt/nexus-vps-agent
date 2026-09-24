@@ -51,15 +51,9 @@ export class TelegramBot {
     this.allowedUserIds = deps.config.TELEGRAM_ALLOWED_USER_IDS ?? [];
     this.logger = deps.logger.child({ component: 'TelegramBot' });
 
-    registerTelegramHandlers(this.bot, {
-      config: deps.config,
-      agentCore: deps.agentCore,
-      sessionManager: deps.sessionManager,
-      logger: this.logger,
-      audit: deps.audit,
-      userSettings: deps.userSettings,
-    });
-
+    // The Control Panel owns /menu and /model. It MUST be registered before the
+    // generic `message:text` handler below; otherwise grammY routes command
+    // text into AgentCore because `message:text` also matches bot commands.
     if (
       deps.db &&
       deps.modelCatalog &&
@@ -80,6 +74,15 @@ export class TelegramBot {
       });
       controlPanel.register(this.bot);
     }
+
+    registerTelegramHandlers(this.bot, {
+      config: deps.config,
+      agentCore: deps.agentCore,
+      sessionManager: deps.sessionManager,
+      logger: this.logger,
+      audit: deps.audit,
+      userSettings: deps.userSettings,
+    });
   }
 
   /**

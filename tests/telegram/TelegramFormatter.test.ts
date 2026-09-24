@@ -142,6 +142,7 @@ describe('TelegramFormatter', () => {
         expect(chunk.text.length).toBeLessThanOrEqual(4096);
       }
     });
+  });
 
   describe('filesystem', () => {
     it('formats filesystem list JSON as a tree', () => {
@@ -291,6 +292,42 @@ describe('TelegramFormatter', () => {
     });
   });
 
+  describe('markdown cleanup', () => {
+    it('never shows raw markdown asterisks in formatted output', () => {
+      const input = '**Hostname:** `armbian`\n- Platform: **linux**\n- RAM: **1.87 GiB**';
+      const chunks = formatter.formatGeneric(input);
+      const html = chunks.map((c) => c.text).join('\n');
+      expect(html).not.toContain('**');
+      expect(html).toContain('<b>Hostname:</b>');
+      expect(html).toContain('<code>armbian</code>');
+    });
+
+    it('strips markdown from speedtest prose and formats it compactly', () => {
+      const input =
+        '**Speedtest**\n' +
+        '- Download: **42.31 Mbps**\n' +
+        '- Upload: **18.72 Mbps**\n' +
+        '- Ping: **24 ms**\n' +
+        '- Server: **Jakarta**';
+      const chunks = formatter.formatSpeedtest(input);
+      const html = chunks.map((c) => c.text).join('\n');
+      expect(html).not.toContain('**');
+      expect(html).toContain('Download   42.31 Mbps');
+      expect(html).toContain('Upload     18.72 Mbps');
+      expect(html).toContain('Ping       24 ms');
+      expect(html).toContain('Jakarta');
+    });
+
+    it('strips markdown from shell-style pre blocks', () => {
+      const input = 'Output:\n**Linux** armbian\n- item one';
+      const chunks = formatter.formatShell(input);
+      const html = chunks.map((c) => c.text).join('\n');
+      expect(html).not.toContain('**');
+      expect(html).toContain('Linux armbian');
+      expect(html).toContain('• item one');
+    });
+  });
+
   describe('edge cases', () => {
     it('returns a default message for empty input', () => {
       const chunks = formatter.formatResponse('');
@@ -311,5 +348,4 @@ describe('TelegramFormatter', () => {
       expect(html).toMatch(/linux|null/);
     });
   });
-});
 });

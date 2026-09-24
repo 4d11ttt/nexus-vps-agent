@@ -215,7 +215,30 @@ export class TelegramFormatter {
     if (isPlainObject(json)) {
       return this.formatSpeedtestFromJson(json, options);
     }
-    const preBlock = extractPreformattedBlock(response) ?? response;
+
+    const clean = stripMarkdownBlock(response);
+    const download = extractValueLoose(clean, 'Download');
+    const upload = extractValueLoose(clean, 'Upload');
+    const ping = extractValueLoose(clean, 'Ping');
+    const jitter = extractValueLoose(clean, 'Jitter');
+    const server = extractValueLoose(clean, 'Server');
+
+    if (download || upload || ping) {
+      const rows: string[] = [];
+      if (download) rows.push(`Download   ${download}`);
+      if (upload) rows.push(`Upload     ${upload}`);
+      if (ping) rows.push(`Ping       ${ping}`);
+      if (jitter) rows.push(`Jitter     ${jitter}`);
+
+      const parts: string[] = [`${ICON.speedtest} ${bold('Speedtest')}\n`];
+      parts.push(pre(rows.join('\n')));
+      if (server) {
+        parts.push(`\n${bold('Server')}\n${code(server)}`);
+      }
+      return this.wrapHtmlChunk(parts.join('') + this.footerHtml(options));
+    }
+
+    const preBlock = extractPreformattedBlock(response) ?? clean;
     return this.buildBlockChunks('Speedtest', ICON.speedtest, preBlock, options);
   }
 
@@ -239,7 +262,7 @@ export class TelegramFormatter {
     if (isPlainObject(json) && Array.isArray(json.items) && typeof json.path === 'string') {
       return this.formatFilesystemFromJson(json, options);
     }
-    const preBlock = extractPreformattedBlock(response) ?? response;
+    const preBlock = extractPreformattedBlock(response) ?? stripMarkdownBlock(response);
     return this.buildBlockChunks('Files', ICON.files, preBlock, options);
   }
 
@@ -255,7 +278,7 @@ export class TelegramFormatter {
     if (isPlainObject(json) && Array.isArray(json.processes)) {
       return this.formatProcessesFromJson(json, options);
     }
-    const preBlock = extractPreformattedBlock(response) ?? response;
+    const preBlock = extractPreformattedBlock(response) ?? stripMarkdownBlock(response);
     return this.buildBlockChunks('Processes', ICON.process, preBlock, options);
   }
 
@@ -276,7 +299,7 @@ export class TelegramFormatter {
     if (isPlainObject(json)) {
       return this.formatPackageManagerFromJson(json, options);
     }
-    const preBlock = extractPreformattedBlock(response) ?? response;
+    const preBlock = extractPreformattedBlock(response) ?? stripMarkdownBlock(response);
     return this.buildBlockChunks('Package Manager', ICON.packages, preBlock, options);
   }
 
@@ -306,7 +329,7 @@ export class TelegramFormatter {
     if (isPlainObject(json) && typeof json.command === 'string') {
       return this.formatShellFromJson(json, options);
     }
-    const preBlock = extractPreformattedBlock(response) ?? response;
+    const preBlock = extractPreformattedBlock(response) ?? stripMarkdownBlock(response);
     const chunks = splitMessage(preBlock, MAX_CHUNK_LENGTH).map((block) => pre(block));
     return this.buildMultiPreChunks('Command', ICON.command, undefined, chunks, options);
   }
@@ -322,7 +345,8 @@ export class TelegramFormatter {
   }
 
   formatError(response: string, _options: FormatOptions = {}): TelegramMessageChunk[] {
-    const chunks = splitMessage(response.trim(), MAX_CHUNK_LENGTH);
+    const clean = stripMarkdownBlock(response.trim());
+    const chunks = splitMessage(clean, MAX_CHUNK_LENGTH);
     const parts: TelegramMessageChunk[] = [];
     for (let i = 0; i < chunks.length; i++) {
       const header = i === 0 ? `${ICON.error} ${bold('Error')}\n` : '';
@@ -333,6 +357,17 @@ export class TelegramFormatter {
   }
 
   formatGeneric(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
+    // Fast path: short plain text without any markdown-looking content.
+    // Plain-text responses containing '*' still go through conversion below so
+    // stray Markdown asterisks are never shown literally.
+    if (!/(\*\*|`|```|^[-*]\s+|^#{1,6}\s+|^\d+\.\s+|\*[^*\n]+\*)/m.test(response)) {
+      // Plain text with no markup; keep it simple and do not force a footer.
+      return splitMessage(response, MAX_CHUNK_LENGTH).map((chunk) => ({
+        text: chunk,
+        parseMode: undefined,
+      }));
+    }
+
     const converted = markdownToHtml(response);
     if (converted === undefined) {
       // Plain text with no markup; keep it simple and do not force a footer.
@@ -489,11 +524,27 @@ function keyValueLine(label: string, value: string | undefined): string | undefi
 function stripMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/(^|[\s(>"'])\*([^*\n<>]+)\*(?=[\s).,!?;:'"<]|$)/g, '$1$2')
     .replace(/`([^`\n]+)`/g, '$1')
     .replace(/^[-*]\s+/, '')
     .replace(/^\*+\s*/, '')
     .replace(/\s*\*+$/, '')
+    .trim();
+}
+
+/**
+ * Remove visible Markdown markers from a multi-line block that will be rendered
+ * inside a <pre> element. Telegram HTML has no Markdown, so raw `**`, `*`, and
+ * backticks would otherwise be shown literally to the user.
+ */
+function stripMarkdownBlock(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/(^|[\s(>"'])\*([^*\n<>]+)\*(?=[\s).,!?;:'"<]|$)/g, '$1$2')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^[-*]\s+/gm, '• ')
+    .replace(/^\*+\s*/gm, '')
+    .replace(/\s*\*+$/gm, '')
     .trim();
 }
 
@@ -572,6 +623,18 @@ function extractValue(text: string, label: string): string | undefined {
   return value.length > 0 ? value : undefined;
 }
 
+/**
+ * Extract a value from a line that may or may not contain a colon.
+ * Useful for tool output such as `Download  42.31 Mbps`.
+ */
+function extractValueLoose(text: string, label: string): string | undefined {
+  const pattern = new RegExp(`^\\s*(?:[-*•]\\s*)?${label}\\s*[:=]?\\s*(.+)$`, 'im');
+  const match = text.match(pattern);
+  if (!match) return undefined;
+  const value = match[1].trim();
+  return value.length > 0 ? value : undefined;
+}
+
 function extractPlatform(text: string): string | undefined {
   return extractValue(text, 'Platform');
 }
@@ -621,7 +684,7 @@ function looksLikeError(text: string, options: FormatOptions): boolean {
 }
 
 function markdownToHtml(text: string): string | undefined {
-  if (!/(\*\*|`|```|^[-*]\s+)/m.test(text)) {
+  if (!/(\*\*|`|```|^[-*]\s+|^#{1,6}\s+|^\d+\.\s+)/m.test(text)) {
     return undefined;
   }
 
@@ -640,8 +703,19 @@ function markdownToHtml(text: string): string | undefined {
   );
   html = html.replace(/`([^`\n]+)`/g, (_, content: string) => pushPlaceholder(code(content)));
   html = html.replace(/\*\*(.+?)\*\*/g, (_, content: string) => pushPlaceholder(bold(content)));
+  // Single-asterisk emphasis pairs (`*text*`) have no meaning in Telegram HTML
+  // and would otherwise be shown literally. Convert before restoring
+  // placeholders so asterisks inside code/bold content are never touched.
+  // (Underscore markup is intentionally left alone: snake_case identifiers
+  // such as `system_info` are common in VPS output and must not be mangled.)
+  html = html.replace(/(^|[\s(>"'])\*([^*\n<>]+)\*(?=[\s).,!?;:'"<]|$)/g, (_, prefix: string, content: string) =>
+    pushPlaceholder(`${prefix}<i>${content}</i>`),
+  );
   html = html.replace(/\x00PH_(\d+)\x00/g, (_, index: string) => placeholders[Number(index)]);
+  html = html.replace(/(?:^|\n)#{1,6}\s+([^\n]+)/g, (_, content: string) => `\n<b>${content.trim()}</b>`);
   html = html.replace(/(?:^|\n)-\s+([^\n]+)/g, (_, content: string) => `\n• ${content}`);
+  html = html.replace(/(?:^|\n)\*\s+([^\n]+)/g, (_, content: string) => `\n• ${content}`);
+  html = html.replace(/(?:^|\n)\d+\.\s+([^\n]+)/g, (_, content: string) => `\n• ${content}`);
   html = html.replace(/\n\n+/g, '\n');
 
   return html.trim();
