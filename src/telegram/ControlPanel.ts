@@ -18,6 +18,78 @@ import type { ToolContext } from '../tools/context.js';
 
 const MODELS_PER_PAGE = 10;
 
+/**
+ * Explicit parent menu for every screen. Back buttons always target the
+ * parent, so navigation never loops back onto the screen already shown
+ * (which Telegram rejects with "message is not modified").
+ */
+const MENU_PARENTS: Record<string, string> = {
+  // Category screens -> main menu.
+  agent: 'main',
+  server: 'main',
+  intelligence: 'main',
+  automation: 'main',
+  channels: 'main',
+  monitoring: 'main',
+  settings: 'main',
+  // Agent category.
+  model: 'agent',
+  provider: 'agent',
+  // Server category.
+  system: 'server',
+  resources: 'server',
+  processes: 'server',
+  storage: 'server',
+  network: 'server',
+  // Intelligence category.
+  memory: 'intelligence',
+  skills: 'intelligence',
+  // Automation category.
+  scheduler: 'automation',
+  jobs: 'automation',
+  // Monitoring category.
+  logs: 'monitoring',
+  audit: 'monitoring',
+  // Settings.
+  about: 'settings',
+};
+
+/**
+ * Resolve the Back target for a screen. Never returns the screen itself:
+ * unknown screens fall back to the main menu.
+ */
+export function parentMenuOf(screen: string): string {
+  const parent = MENU_PARENTS[screen];
+  if (parent === undefined || parent === screen) return 'main';
+  return parent;
+}
+
+/**
+ * Detect Telegram's benign "message is not modified" error (HTTP 400), raised
+ * when an edit would produce content identical to the current message. grammY
+ * exposes the description on the error itself, on `response`, or on `payload`
+ * depending on the error type.
+ */
+export function isMessageNotModifiedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const enriched = error as Error & {
+    description?: unknown;
+    response?: { description?: unknown };
+    payload?: { description?: unknown };
+  };
+  const candidates = [
+    error.message,
+    enriched.description,
+    enriched.response?.description,
+    enriched.payload?.description,
+  ];
+  return candidates.some(
+    (candidate) =>
+      typeof candidate === 'string' &&
+      candidate.toLowerCase().includes('message is not modified'),
+  );
+}
+
 export interface ControlPanelDeps {
   config: Config;
   modelCatalog: ModelCatalog;
@@ -74,6 +146,14 @@ export class ControlPanel {
       try {
         await this.dispatch(ctx, action);
       } catch (error) {
+        if (isMessageNotModifiedError(error)) {
+          // The edit produced identical content (e.g. a stale keyboard or a
+          // Back button that points at the menu already shown). The callback
+          // is acknowledged as success; this is not an error.
+          await ctx.answerCallbackQuery().catch(() => {});
+          logger.debug({ action }, 'Menu edit skipped: content unchanged');
+          return;
+        }
         logger.error({ error, action }, 'Control panel dispatch failed');
         await ctx.answerCallbackQuery({ text: 'Action failed' }).catch(() => {});
       }
@@ -84,6 +164,21 @@ export class ControlPanel {
     switch (action.menu) {
       case 'main':
         await this.showMainMenu(ctx);
+        break;
+      case 'agent':
+        await this.showAgentMenu(ctx);
+        break;
+      case 'server':
+        await this.showServerMenu(ctx);
+        break;
+      case 'intelligence':
+        await this.showIntelligenceMenu(ctx);
+        break;
+      case 'automation':
+        await this.showAutomationMenu(ctx);
+        break;
+      case 'monitoring':
+        await this.showMonitoringMenu(ctx);
         break;
       case 'model':
         await this.dispatchModel(ctx, action);
@@ -201,6 +296,11 @@ export class ControlPanel {
     return { text: label, callback_data: `menu:${target}` };
   }
 
+  /** Back button for a top-level screen; always targets its parent menu. */
+  private backFor(screen: string): { text: string; callback_data: string } {
+    return this.backButton(parentMenuOf(screen));
+  }
+
   // ---------------------------------------------------------------------------
   // Main menu
   // ---------------------------------------------------------------------------
@@ -208,57 +308,25 @@ export class ControlPanel {
   private async showMainMenu(ctx: Context): Promise<void> {
     const text =
       '⚡ <b>NEXUS VPS</b>\n\n' +
-      '<b>Agent</b>\n' +
-      'Model · Provider\n\n' +
-      '<b>Intelligence</b>\n' +
-      'Memory · Skills\n\n' +
-      '<b>Server</b>\n' +
-      'System · Resources · Processes · Storage · Network\n\n' +
-      '<b>Channels</b>\n' +
-      'Telegram · WebSocket\n\n' +
-      '<b>Automation</b>\n' +
-      'Scheduler · Jobs\n\n' +
-      '<b>Configuration</b>\n' +
-      'Settings\n\n' +
-      '<b>Monitoring</b>\n' +
-      'Logs · Audit';
+      '<b>Agent</b> — Model · Provider\n' +
+      '<b>Server</b> — System · Resources · Processes · Storage · Network\n' +
+      '<b>Intelligence</b> — Memory · Skills\n' +
+      '<b>Automation</b> — Scheduler · Jobs\n' +
+      '<b>Channels</b> — Telegram · WebSocket\n' +
+      '<b>Monitoring</b> — Logs · Audit\n' +
+      '<b>Settings</b> — Runtime configuration';
 
     const keyboard = new InlineKeyboard()
-      // Agent
-      .text('🤖 Model', 'menu:model')
-      .text('🔌 Provider', 'menu:provider')
+      .text('🤖 Agent', 'menu:agent')
+      .text('🖥️ Server', 'menu:server')
       .row()
-      // Intelligence
-      .text('🧠 Memory', 'menu:memory')
-      .text('🛠️ Skills', 'menu:skills')
+      .text('🧠 Intelligence', 'menu:intelligence')
+      .text('⏰ Automation', 'menu:automation')
       .row()
-      // Server
-      .text('🖥️ System', 'menu:system')
-      .text('📊 Resources', 'menu:resources')
+      .text('📡 Channels', 'menu:channels')
+      .text('📜 Monitoring', 'menu:monitoring')
       .row()
-      .text('⚙️ Processes', 'menu:processes')
-      .text('💾 Storage', 'menu:storage')
-      .row()
-      .text('🌐 Network', 'menu:network')
-      .row()
-      // Channels
-      .text('📡 Telegram', 'menu:channels:telegram')
-      .text('🌐 WebSocket', 'menu:channels:websocket')
-      .row()
-      // Automation
-      .text('⏰ Scheduler', 'menu:scheduler')
-      .text('📋 Jobs', 'menu:jobs')
-      .row()
-      // Configuration
-      .text('⚙️ Settings', 'menu:settings')
-      .row()
-      // Monitoring
-      .text('📜 Logs', 'menu:logs')
-      .text('🛡️ Audit', 'menu:audit')
-      .row()
-      // Footer
-      .text('🔄 Refresh', 'menu:refresh')
-      .text('ℹ️ About', 'menu:about');
+      .text('⚙️ Settings', 'menu:settings');
 
     if (ctx.callbackQuery) {
       await this.editMenu(ctx, text, keyboard);
@@ -268,6 +336,70 @@ export class ControlPanel {
     }
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Category menus
+  // ---------------------------------------------------------------------------
+
+  private async showAgentMenu(ctx: Context): Promise<void> {
+    const text = `🤖 <b>Agent</b>\n\nModel selection and provider connection.`;
+    const keyboard = new InlineKeyboard()
+      .text('🤖 Model', 'menu:model')
+      .text('🔌 Provider', 'menu:provider')
+      .row()
+      .add(this.backButton('main'));
+    await this.editMenu(ctx, text, keyboard);
+    await this.answer(ctx);
+  }
+
+  private async showServerMenu(ctx: Context): Promise<void> {
+    const text = `🖥️ <b>Server</b>\n\nLive VPS status: system, resources, processes, storage, network.`;
+    const keyboard = new InlineKeyboard()
+      .text('🖥️ System', 'menu:system')
+      .text('📊 Resources', 'menu:resources')
+      .row()
+      .text('⚙️ Processes', 'menu:processes')
+      .text('💾 Storage', 'menu:storage')
+      .row()
+      .text('🌐 Network', 'menu:network')
+      .row()
+      .add(this.backButton('main'));
+    await this.editMenu(ctx, text, keyboard);
+    await this.answer(ctx);
+  }
+
+  private async showIntelligenceMenu(ctx: Context): Promise<void> {
+    const text = `🧠 <b>Intelligence</b>\n\nPersistent memory and reusable skills.`;
+    const keyboard = new InlineKeyboard()
+      .text('🧠 Memory', 'menu:memory')
+      .text('🛠️ Skills', 'menu:skills')
+      .row()
+      .add(this.backButton('main'));
+    await this.editMenu(ctx, text, keyboard);
+    await this.answer(ctx);
+  }
+
+  private async showAutomationMenu(ctx: Context): Promise<void> {
+    const text = `⏰ <b>Automation</b>\n\nScheduler status and recurring jobs.`;
+    const keyboard = new InlineKeyboard()
+      .text('⏰ Scheduler', 'menu:scheduler')
+      .text('📋 Jobs', 'menu:jobs')
+      .row()
+      .add(this.backButton('main'));
+    await this.editMenu(ctx, text, keyboard);
+    await this.answer(ctx);
+  }
+
+  private async showMonitoringMenu(ctx: Context): Promise<void> {
+    const text = `📜 <b>Monitoring</b>\n\nRuntime logs and audit trail.`;
+    const keyboard = new InlineKeyboard()
+      .text('📜 Logs', 'menu:logs')
+      .text('🛡️ Audit', 'menu:audit')
+      .row()
+      .add(this.backButton('main'));
+    await this.editMenu(ctx, text, keyboard);
+    await this.answer(ctx);
+  }
 
   private safeChunk(text: string, maxLength = 3800): string {
     if (text.length <= maxLength) return text;
@@ -308,7 +440,7 @@ export class ControlPanel {
       .text('🔄 Refresh Models', 'menu:model:refresh')
       .text('🔌 Provider', 'menu:provider')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('model'));
 
     if (ctx.callbackQuery) {
       await this.editMenu(ctx, text, keyboard);
@@ -329,7 +461,7 @@ export class ControlPanel {
         .text('🔄 Refresh Models', 'menu:model:refresh')
         .text('🔌 Provider', 'menu:provider')
         .row()
-        .add(this.backButton('main'));
+        .add(this.backFor('model'));
       await this.editMenu(ctx, text, keyboard);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -337,7 +469,7 @@ export class ControlPanel {
       const keyboard = new InlineKeyboard()
         .text('🔄 Retry', 'menu:model:refresh')
         .row()
-        .add(this.backButton('main'));
+        .add(this.backFor('model'));
       await this.editMenu(ctx, text, keyboard);
     }
   }
@@ -400,7 +532,7 @@ export class ControlPanel {
       .text('🔄 Refresh Models', 'menu:model:refresh')
       .text('🔌 Provider', 'menu:provider')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('model'));
 
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx, `Model set to ${modelId}`);
@@ -437,7 +569,7 @@ export class ControlPanel {
       .row()
       .text('🤖 Models', 'menu:model')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('provider'));
 
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
@@ -460,7 +592,7 @@ export class ControlPanel {
       .row()
       .text('🤖 Models', 'menu:model')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('provider'));
 
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
@@ -516,7 +648,7 @@ export class ControlPanel {
       .row()
       .text('🗑️ Manage', 'menu:memory:manage')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('memory'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
   }
@@ -580,7 +712,7 @@ export class ControlPanel {
       .row()
       .text('🔄 Reload', 'menu:skills:reload')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('skills'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
   }
@@ -604,7 +736,7 @@ export class ControlPanel {
     const keyboard = new InlineKeyboard()
       .text('📋 List', 'menu:skills:list')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('skills'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx, `Reloaded ${count} skills`);
   }
@@ -683,7 +815,7 @@ export class ControlPanel {
     backTarget: string,
   ): Promise<void> {
     const text = chunks.map((c) => c.text).join('\n');
-    const keyboard = new InlineKeyboard().add(this.backButton(backTarget));
+    const keyboard = new InlineKeyboard().add(this.backButton(parentMenuOf(backTarget)));
     await this.editMenu(ctx, this.safeChunk(text), keyboard);
     await this.answer(ctx);
   }
@@ -714,7 +846,7 @@ export class ControlPanel {
     const keyboard = new InlineKeyboard()
       .text('📋 Jobs', 'menu:jobs')
       .row()
-      .add(this.backButton('main'));
+      .add(this.backFor('scheduler'));
 
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
@@ -729,7 +861,7 @@ export class ControlPanel {
       return `${enabled} <code>${this.escape(j.name)}</code> — ${this.escape(status)}`;
     });
     const text = `📋 <b>Jobs</b>\n\n${lines.length > 0 ? lines.join('\n') : 'No jobs.'}`;
-    const keyboard = new InlineKeyboard().add(this.backButton('scheduler'));
+    const keyboard = new InlineKeyboard().add(this.backFor('jobs'));
     await this.editMenu(ctx, this.safeChunk(text), keyboard);
     await this.answer(ctx);
   }
@@ -753,6 +885,8 @@ export class ControlPanel {
     const keyboard = new InlineKeyboard()
       .text('🤖 Change Model', 'menu:model')
       .row()
+      .text('ℹ️ About', 'menu:about')
+      .row()
       .add(this.backButton('main'));
 
     await this.editMenu(ctx, text, keyboard);
@@ -769,7 +903,7 @@ export class ControlPanel {
       `Log level: <code>${this.escape(this.deps.config.LOG_LEVEL)}</code>\n` +
       `Environment: <code>${this.escape(this.deps.config.NODE_ENV)}</code>\n\n` +
       `Lihat log di filesystem server atau konsol.`;
-    const keyboard = new InlineKeyboard().add(this.backButton('main'));
+    const keyboard = new InlineKeyboard().add(this.backFor('logs'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
   }
@@ -779,7 +913,7 @@ export class ControlPanel {
       `🛡️ <b>Audit</b>\n\n` +
       `Audit events are persisted in the database.\n` +
       `Total events are available via server-side queries.`;
-    const keyboard = new InlineKeyboard().add(this.backButton('main'));
+    const keyboard = new InlineKeyboard().add(this.backFor('audit'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
   }
@@ -789,18 +923,15 @@ export class ControlPanel {
   // ---------------------------------------------------------------------------
 
   private async showChannels(ctx: Context, channel?: string): Promise<void> {
-    const telegramStatus = this.deps.config.TELEGRAM_ENABLED ? '● Connected' : '○ Disabled';
-    const wsStatus = '○ Not implemented';
+    const telegramStatus = this.deps.config.TELEGRAM_ENABLED ? '● Enabled' : '○ Disabled';
+    const wsStatus = '○ Not available';
 
     if (channel === 'telegram') {
       const text =
         `📡 <b>Telegram</b>\n\n` +
         `Status: ${telegramStatus}\n` +
         `Allowed users: <code>${this.deps.config.TELEGRAM_ALLOWED_USER_IDS?.length ?? 0}</code>`;
-      const keyboard = new InlineKeyboard()
-        .text('⬅️ Channels', 'menu:channels')
-        .row()
-        .add(this.backButton('main'));
+      const keyboard = new InlineKeyboard().add(this.backButton('channels'));
       await this.editMenu(ctx, text, keyboard);
       await this.answer(ctx);
       return;
@@ -811,10 +942,7 @@ export class ControlPanel {
         `🌐 <b>WebSocket</b>\n\n` +
         `Status: ${wsStatus}\n\n` +
         `No WebSocket server is configured in this deployment.`;
-      const keyboard = new InlineKeyboard()
-        .text('⬅️ Channels', 'menu:channels')
-        .row()
-        .add(this.backButton('main'));
+      const keyboard = new InlineKeyboard().add(this.backButton('channels'));
       await this.editMenu(ctx, text, keyboard);
       await this.answer(ctx);
       return;
@@ -843,7 +971,7 @@ export class ControlPanel {
       `Autonomous Telegram agent for Debian VPS management.\n` +
       `Version: <code>0.1.0</code>\n` +
       `Node: <code>${process.version}</code>`;
-    const keyboard = new InlineKeyboard().add(this.backButton('main'));
+    const keyboard = new InlineKeyboard().add(this.backFor('about'));
     await this.editMenu(ctx, text, keyboard);
     await this.answer(ctx);
   }

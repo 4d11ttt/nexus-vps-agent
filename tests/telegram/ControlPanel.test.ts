@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ControlPanel } from '../../src/telegram/ControlPanel.js';
+import { ControlPanel, isMessageNotModifiedError, parentMenuOf } from '../../src/telegram/ControlPanel.js';
 import type { Context } from 'grammy';
 import type { Config } from '../../src/config.js';
 import type { SessionManager } from '../../src/agent/SessionManager.js';
@@ -77,10 +77,12 @@ describe('ControlPanel', () => {
   let memoryManager: MemoryManager;
   let skillManager: SkillManager;
   let sessionManager: SessionManager;
+  let logger: ReturnType<typeof makeLogger>;
   let panel: ControlPanel;
 
   beforeEach(() => {
     bot = new FakeBot();
+    logger = makeLogger();
     modelCatalog = {
       listModels: vi.fn().mockResolvedValue([
         { id: 'model-a' },
@@ -102,6 +104,7 @@ describe('ControlPanel', () => {
     skillManager = {
       list: vi.fn().mockReturnValue([]),
       discover: vi.fn(),
+      read: vi.fn().mockReturnValue('# Skill'),
     } as unknown as SkillManager;
 
     sessionManager = {
@@ -117,7 +120,7 @@ describe('ControlPanel', () => {
       memoryManager,
       skillManager,
       sessionManager,
-      logger: makeLogger(),
+      logger,
     });
 
     panel.register(bot as unknown as import('grammy').Bot);
@@ -132,7 +135,7 @@ describe('ControlPanel', () => {
     expect(bot.events.has('callback_query:data')).toBe(true);
   });
 
-  it('opens the main menu on /menu with all control center buttons', async () => {
+  it('opens the main menu as a grouped category menu', async () => {
     const ctx = makeContext({ userId: 123, text: '/menu' });
     const handler = bot.commands.get('menu')!;
     await handler(ctx);
@@ -141,31 +144,47 @@ describe('ControlPanel', () => {
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
     const markup = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][1]?.reply_markup as {
-      inline_keyboard: Array<Array<{ text: string }>>;
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     };
-    const labels = markup.inline_keyboard.flat().map((b) => b.text).join(' ');
+    const buttons = markup.inline_keyboard.flat();
+    const labels = buttons.map((b) => b.text).join(' ');
     for (const expected of [
+      'Agent',
+      'Server',
+      'Intelligence',
+      'Automation',
+      'Channels',
+      'Monitoring',
+      'Settings',
+    ]) {
+      expect(labels).toContain(expected);
+    }
+    // Category buttons only: feature screens live in their submenus.
+    for (const hidden of [
       'Model',
       'Provider',
       'Memory',
       'Skills',
-      'System',
       'Resources',
       'Processes',
       'Storage',
       'Network',
-      'Telegram',
-      'WebSocket',
       'Scheduler',
-      'Jobs',
-      'Settings',
       'Logs',
-      'Audit',
-      'Refresh',
       'About',
+      'Refresh',
     ]) {
-      expect(labels).toContain(expected);
+      expect(labels).not.toContain(hidden);
     }
+    expect(buttons.map((b) => b.callback_data)).toEqual([
+      'menu:agent',
+      'menu:server',
+      'menu:intelligence',
+      'menu:automation',
+      'menu:channels',
+      'menu:monitoring',
+      'menu:settings',
+    ]);
   });
 
   it('opens the model menu on /model', async () => {
@@ -240,12 +259,191 @@ describe('ControlPanel', () => {
 
   it('answers callback queries on every action', async () => {
     const handler = bot.events.get('callback_query:data')!;
-    const callbacks = ['menu:main', 'menu:model', 'menu:model:list:0', 'menu:provider', 'menu:provider:test', 'menu:settings'];
+    const callbacks = [
+      'menu:main',
+      'menu:agent',
+      'menu:server',
+      'menu:intelligence',
+      'menu:automation',
+      'menu:monitoring',
+      'menu:channels',
+      'menu:channels:telegram',
+      'menu:channels:websocket',
+      'menu:settings',
+      'menu:about',
+      'menu:model',
+      'menu:model:list:0',
+      'menu:provider',
+      'menu:provider:test',
+      'menu:memory',
+      'menu:memory:browse',
+      'menu:skills',
+      'menu:skills:list',
+      'menu:system',
+      'menu:resources',
+      'menu:processes',
+      'menu:storage',
+      'menu:network',
+      'menu:scheduler',
+      'menu:jobs',
+      'menu:logs',
+      'menu:audit',
+    ];
     for (const data of callbacks) {
       const ctx = makeContext({ userId: 123, data });
       await handler(ctx);
       expect(ctx.answerCallbackQuery).toHaveBeenCalled();
     }
+  });
+
+  type KeyboardButton = { text: string; callback_data?: string };
+  type ReplyMarkup = { inline_keyboard: KeyboardButton[][] };
+
+  function lastKeyboard(ctx: Context): ReplyMarkup | undefined {
+    const calls = (ctx.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
+    if (calls.length === 0) return undefined;
+    return calls[calls.length - 1][1]?.reply_markup as ReplyMarkup | undefined;
+  }
+
+  function findBackButton(keyboard: ReplyMarkup | undefined): KeyboardButton | undefined {
+    return keyboard?.inline_keyboard.flat().find((b) => b.text.includes('Back'));
+  }
+
+  it('maps every screen Back button to its explicit parent menu', async () => {
+    const handler = bot.events.get('callback_query:data')!;
+    const cases: Array<[screen: string, parent: string]> = [
+      ['menu:agent', 'menu:main'],
+      ['menu:server', 'menu:main'],
+      ['menu:intelligence', 'menu:main'],
+      ['menu:automation', 'menu:main'],
+      ['menu:monitoring', 'menu:main'],
+      ['menu:channels', 'menu:main'],
+      ['menu:settings', 'menu:main'],
+      ['menu:model', 'menu:agent'],
+      ['menu:provider', 'menu:agent'],
+      ['menu:system', 'menu:server'],
+      ['menu:resources', 'menu:server'],
+      ['menu:processes', 'menu:server'],
+      ['menu:storage', 'menu:server'],
+      ['menu:network', 'menu:server'],
+      ['menu:memory', 'menu:intelligence'],
+      ['menu:skills', 'menu:intelligence'],
+      ['menu:scheduler', 'menu:automation'],
+      ['menu:jobs', 'menu:automation'],
+      ['menu:logs', 'menu:monitoring'],
+      ['menu:audit', 'menu:monitoring'],
+      ['menu:about', 'menu:settings'],
+      ['menu:model:list:0', 'menu:model'],
+      ['menu:memory:browse', 'menu:memory'],
+      ['menu:skills:list', 'menu:skills'],
+      ['menu:channels:telegram', 'menu:channels'],
+      ['menu:channels:websocket', 'menu:channels'],
+    ];
+    for (const [screen, parent] of cases) {
+      const ctx = makeContext({ userId: 123, data: screen });
+      await handler(ctx);
+      const back = findBackButton(lastKeyboard(ctx));
+      expect(back, `Back button missing for ${screen}`).toBeDefined();
+      expect(back!.callback_data, `Back target for ${screen}`).toBe(parent);
+      // A Back button must never navigate onto the screen already shown.
+      expect(back!.callback_data, `Self-loop on ${screen}`).not.toBe(screen);
+    }
+  });
+
+  it('parentMenuOf never returns the screen itself', () => {
+    const screens = [
+      'agent', 'server', 'intelligence', 'automation', 'channels', 'monitoring',
+      'settings', 'model', 'provider', 'system', 'resources', 'processes',
+      'storage', 'network', 'memory', 'skills', 'scheduler', 'jobs', 'logs',
+      'audit', 'about',
+    ];
+    for (const screen of screens) {
+      expect(parentMenuOf(screen)).not.toBe(screen);
+    }
+    expect(parentMenuOf('unknown-screen')).toBe('main');
+  });
+
+  it('answers "message is not modified" edits as success without logging an error', async () => {
+    const ctx = makeContext({ userId: 123, data: 'menu:resources' });
+    const notModified = Object.assign(new Error('Call to editMessageText failed!'), {
+      error_code: 400,
+      description: 'Bad Request: message is not modified',
+      response: { description: 'Bad Request: message is not modified' },
+    });
+    (ctx.editMessageText as ReturnType<typeof vi.fn>).mockRejectedValueOnce(notModified);
+    const handler = bot.events.get('callback_query:data')!;
+    await handler(ctx);
+    expect(ctx.answerCallbackQuery).toHaveBeenCalled();
+    expect(ctx.answerCallbackQuery).not.toHaveBeenCalledWith({ text: 'Action failed' });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('surfaces other edit errors as Action failed', async () => {
+    const ctx = makeContext({ userId: 123, data: 'menu:resources' });
+    (ctx.editMessageText as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('chat not found'),
+    );
+    const handler = bot.events.get('callback_query:data')!;
+    await handler(ctx);
+    expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({ text: 'Action failed' });
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('shows only real channel statuses', async () => {
+    const handler = bot.events.get('callback_query:data')!;
+    const ctx = makeContext({ userId: 123, data: 'menu:channels' });
+    await handler(ctx);
+    const text = (ctx.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(text).toContain('Enabled');
+    expect(text).toContain('Not available');
+    expect(text).not.toContain('Connected');
+
+    const wsCtx = makeContext({ userId: 123, data: 'menu:channels:websocket' });
+    await handler(wsCtx);
+    const wsText = (wsCtx.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(wsText).not.toContain('Connected');
+  });
+
+  it('exposes only safe runtime settings with an About entry point', async () => {
+    const ctx = makeContext({ userId: 123, data: 'menu:settings' });
+    const handler = bot.events.get('callback_query:data')!;
+    await handler(ctx);
+    const text = (ctx.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(text).toContain('Settings');
+    expect(text).not.toContain('fake-key');
+    expect(text).not.toContain('fake-token');
+    const keyboard = lastKeyboard(ctx);
+    const labels = keyboard?.inline_keyboard.flat().map((b) => b.text) ?? [];
+    expect(labels.some((l) => l.includes('About'))).toBe(true);
+    expect(findBackButton(keyboard)?.callback_data).toBe('menu:main');
+  });
+});
+
+describe('isMessageNotModifiedError', () => {
+  it('matches Telegram 400 description shapes', () => {
+    expect(isMessageNotModifiedError(new Error('Bad Request: message is not modified'))).toBe(true);
+
+    const withDescription = Object.assign(new Error('Call to editMessageText failed!'), {
+      description: 'Bad Request: message is not modified',
+    });
+    expect(isMessageNotModifiedError(withDescription)).toBe(true);
+
+    const withResponse = Object.assign(new Error('tg error'), {
+      response: { description: 'Bad Request: message is not modified' },
+    });
+    expect(isMessageNotModifiedError(withResponse)).toBe(true);
+
+    const withPayload = Object.assign(new Error('tg error'), {
+      payload: { description: 'Bad Request: message is not modified' },
+    });
+    expect(isMessageNotModifiedError(withPayload)).toBe(true);
+  });
+
+  it('rejects unrelated errors and non-errors', () => {
+    expect(isMessageNotModifiedError(new Error('chat not found'))).toBe(false);
+    expect(isMessageNotModifiedError('message is not modified')).toBe(false);
+    expect(isMessageNotModifiedError(undefined)).toBe(false);
+    expect(isMessageNotModifiedError({ description: 'message is not modified' })).toBe(false);
   });
 });
 
