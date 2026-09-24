@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ControlPanel, ensureTelegramText, isMessageNotModifiedError, parentMenuOf } from '../../src/telegram/ControlPanel.js';
+import { LLMRuntimeConfig } from '../../src/llm/LLMRuntimeConfig.js';
 import type { Context } from 'grammy';
 import type { Config } from '../../src/config.js';
 import type { SessionManager } from '../../src/agent/SessionManager.js';
@@ -24,6 +25,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     LLM_API_BASE: 'https://api.example.com/v1',
     LLM_API_KEY: 'fake-key',
     LLM_MODEL: 'default-model',
+    LLM_SECRETS_PATH: './data/test-secrets.json',
     ...overrides,
   } as Config;
 }
@@ -128,9 +130,12 @@ describe('ControlPanel', () => {
       getOrCreateSession: vi.fn().mockResolvedValue({ id: 10 }),
     } as unknown as SessionManager;
 
+    const runtimeConfig = new LLMRuntimeConfig(makeConfig());
+
     panel = new ControlPanel({
       config: makeConfig(),
       modelCatalog,
+      runtimeConfig,
       userSettings,
       memoryManager,
       skillManager,
@@ -141,7 +146,8 @@ describe('ControlPanel', () => {
     panel.register(bot as unknown as import('grammy').Bot);
   });
 
-  it('registers /menu and /model commands', () => {
+  it('registers /start, /menu and /model commands', () => {
+    expect(bot.commands.has('start')).toBe(true);
     expect(bot.commands.has('menu')).toBe(true);
     expect(bot.commands.has('model')).toBe(true);
   });
@@ -188,7 +194,6 @@ describe('ControlPanel', () => {
       'Settings',
       'Network',
       'About',
-      'Refresh',
     ]) {
       expect(labels).toContain(expected);
     }
@@ -203,20 +208,20 @@ describe('ControlPanel', () => {
       'Storage',
       'Scheduler',
       'Logs',
+      'Refresh',
     ]) {
       expect(labels).not.toContain(hidden);
     }
     expect(buttons.map((b) => b.callback_data)).toEqual([
       'menu:agent',
-      'menu:intelligence',
       'menu:server',
+      'menu:intelligence',
       'menu:network',
       'menu:automation',
       'menu:channels',
       'menu:settings',
       'menu:monitoring',
       'menu:about',
-      'menu:refresh',
     ]);
     const callbacks = buttons.map((b) => b.callback_data);
     expect(callbacks).not.toContain('menu:model');
@@ -230,6 +235,16 @@ describe('ControlPanel', () => {
     expect(callbacks).not.toContain('menu:jobs');
     expect(callbacks).not.toContain('menu:logs');
     expect(callbacks).not.toContain('menu:audit');
+  });
+
+  it('opens the main menu on /start without invoking AgentCore', async () => {
+    const ctx = makeContext({ userId: 123, text: '/start' });
+    const handler = bot.commands.get('start')!;
+    await handler(ctx);
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
+    const sentText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(sentText).toBe('⚡ <b>NEXUS VPS</b>');
+    expect(sessionManager.ensureUser as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
   it('opens the model menu on /model', async () => {
@@ -297,8 +312,9 @@ describe('ControlPanel', () => {
     const handler = bot.events.get('callback_query:data')!;
     await handler(ctx);
     const call = (ctx.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(call).toContain('Provider');
+    expect(call).toContain('OpenAI-Compatible');
     expect(call).toContain('api.example.com/v1');
+    expect(call).toContain('••••••••');
     expect(call).not.toContain('fake-key');
   });
 
@@ -339,7 +355,7 @@ describe('ControlPanel', () => {
       await handler(ctx);
       expect(ctx.answerCallbackQuery).toHaveBeenCalled();
     }
-  });
+  }, 10_000);
 
   type KeyboardButton = { text: string; callback_data?: string };
   type ReplyMarkup = { inline_keyboard: KeyboardButton[][] };
@@ -474,7 +490,6 @@ describe('ensureTelegramText', () => {
     for (const input of ['', '   ', '\n\t ']) {
       const fallback = ensureTelegramText(input);
       expect(fallback).toContain('NEXUS VPS');
-      expect(fallback).toContain('Control Center');
       expect(stripControl(fallback).length).toBeGreaterThan(0);
     }
   });

@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import type { Config } from '../config.js';
+import type { LLMRuntimeConfig } from './LLMRuntimeConfig.js';
 
 const MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 30_000;
@@ -10,7 +10,7 @@ export interface ModelInfo {
 }
 
 export interface ModelCatalogDeps {
-  config: Config;
+  runtimeConfig: LLMRuntimeConfig;
   logger: Logger;
 }
 
@@ -104,7 +104,7 @@ export class ModelCatalog {
 
   private fetchModelsRaw(): Promise<Response> {
     const url = this.buildModelsUrl();
-    const apiKey = this.deps.config.LLM_API_KEY;
+    const apiKey = this.deps.runtimeConfig.getApiKey();
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort('timeout'), FETCH_TIMEOUT_MS);
@@ -127,14 +127,11 @@ export class ModelCatalog {
   }
 
   private buildModelsUrl(): string {
-    const base = (this.deps.config.LLM_API_BASE ?? '').replace(/\/+$/, '');
+    const base = this.deps.runtimeConfig.getApiBase().replace(/\/+$/, '');
     if (!base) {
       throw new Error('LLM_API_BASE is not configured');
     }
-    if (base.endsWith('/v1')) {
-      return `${base}/models`;
-    }
-    return `${base}/v1/models`;
+    return `${base}/models`;
   }
 
   private safeReadError(response: Response): Promise<string> {

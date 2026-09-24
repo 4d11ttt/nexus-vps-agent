@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Context } from 'grammy';
 import { Bot } from 'grammy';
+import { LLMRuntimeConfig } from '../../src/llm/LLMRuntimeConfig.js';
 import { TelegramBot } from '../../src/telegram/TelegramBot.js';
 import type { Config } from '../../src/config.js';
 
@@ -109,6 +110,7 @@ describe('TelegramBot', () => {
         listModels: vi.fn(),
         testConnection: vi.fn(),
       } as unknown as import('../../src/llm/ModelCatalog.js').ModelCatalog,
+      runtimeConfig: new LLMRuntimeConfig(makeConfig()),
       userSettings: {
         getModel: vi.fn(),
         setModel: vi.fn(),
@@ -125,8 +127,10 @@ describe('TelegramBot', () => {
 
     expect(order).toContain('command:menu');
     expect(order).toContain('command:model');
+    expect(order).toContain('command:start');
     expect(order.indexOf('command:menu')).toBeLessThan(order.indexOf('event:message:text'));
     expect(order.indexOf('command:model')).toBeLessThan(order.indexOf('event:message:text'));
+    expect(order.indexOf('command:start')).toBeLessThan(order.indexOf('event:message:text'));
   });
 });
 

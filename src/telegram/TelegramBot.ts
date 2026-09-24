@@ -9,6 +9,7 @@ import type { MemoryManager } from '../memory/MemoryManager.js';
 import type { SkillManager } from '../skills/SkillManager.js';
 import type { Scheduler } from '../scheduler/Scheduler.js';
 import type { ModelCatalog } from '../llm/ModelCatalog.js';
+import type { LLMRuntimeConfig } from '../llm/LLMRuntimeConfig.js';
 import type { UserSettingsService } from '../settings/UserSettingsService.js';
 import { registerTelegramHandlers } from './handlers.js';
 import { isAuthorized } from './authorization.js';
@@ -23,6 +24,7 @@ export interface TelegramBotDeps {
   audit?: AuditService;
   db?: Database;
   modelCatalog?: ModelCatalog;
+  runtimeConfig?: LLMRuntimeConfig;
   userSettings?: UserSettingsService;
   memoryManager?: MemoryManager;
   skillManager?: SkillManager;
@@ -57,6 +59,7 @@ export class TelegramBot {
     if (
       deps.db &&
       deps.modelCatalog &&
+      deps.runtimeConfig &&
       deps.userSettings &&
       deps.memoryManager &&
       deps.skillManager
@@ -64,6 +67,7 @@ export class TelegramBot {
       const controlPanel = new ControlPanel({
         config: deps.config,
         modelCatalog: deps.modelCatalog,
+        runtimeConfig: deps.runtimeConfig,
         userSettings: deps.userSettings,
         memoryManager: deps.memoryManager,
         skillManager: deps.skillManager,

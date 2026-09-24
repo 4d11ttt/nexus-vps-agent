@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, type Context } from 'grammy';
+import { Bot, InlineKeyboard, type Context, type NextFunction } from 'grammy';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
 import type { SessionManager } from '../agent/SessionManager.js';
@@ -8,6 +8,7 @@ import type { Scheduler } from '../scheduler/Scheduler.js';
 import type { AuditService } from '../audit/AuditService.js';
 import { TelegramFormatter } from './TelegramFormatter.js';
 import { ModelCatalog } from '../llm/ModelCatalog.js';
+import { LLMRuntimeConfig } from '../llm/LLMRuntimeConfig.js';
 import { UserSettingsService } from '../settings/UserSettingsService.js';
 import { isAuthorizedContext } from './authorization.js';
 import { resolveAgentUser, resolveSession } from './session.js';
@@ -97,22 +98,7 @@ function stripInvisible(text: string): string {
 }
 
 /** The canonical Control Center main-menu message text. */
-const MAIN_MENU_TEXT =
-  '⚡ <b>NEXUS VPS</b>\n\n' +
-  '<b>Control Center</b>\n' +
-  'Manage your VPS, agent and automation.\n\n' +
-  '<b>Agent</b>\n' +
-  'Model · Provider · Memory · Skills\n\n' +
-  '<b>Server</b>\n' +
-  'System · Network\n\n' +
-  '<b>Automation</b>\n' +
-  'Scheduler · Jobs\n\n' +
-  '<b>Channels</b>\n' +
-  'Telegram · WebSocket\n\n' +
-  '<b>Settings</b>\n' +
-  'Runtime configuration\n\n' +
-  '<b>Monitoring</b>\n' +
-  'Logs · Audit';
+const MAIN_MENU_TEXT = '⚡ <b>NEXUS VPS</b>';
 
 /**
  * Detect Telegram's benign "message is not modified" error (HTTP 400), raised
@@ -143,6 +129,7 @@ export function isMessageNotModifiedError(error: unknown): boolean {
 export interface ControlPanelDeps {
   config: Config;
   modelCatalog: ModelCatalog;
+  runtimeConfig: LLMRuntimeConfig;
   userSettings: UserSettingsService;
   memoryManager: MemoryManager;
   skillManager: SkillManager;
@@ -158,14 +145,28 @@ interface CallbackAction {
   arg?: string;
 }
 
+type PendingInputMode = 'provider_base_url' | 'provider_api_key';
+
+interface PendingInput {
+  mode: PendingInputMode;
+}
+
 export class ControlPanel {
   private readonly formatter = new TelegramFormatter();
   private readonly modelTokens = new Map<number, Map<string, string>>();
+  private readonly pendingInput = new Map<number, PendingInput>();
 
   constructor(private readonly deps: ControlPanelDeps) {}
 
   register(bot: Bot): void {
     const logger = this.deps.logger.child({ component: 'ControlPanel' });
+
+    bot.command('start', async (ctx) => {
+      if (!this.isAuthorized(ctx)) return;
+      if (!this.isPrivateChat(ctx)) return;
+      logger.info({ telegramUserId: ctx.from?.id }, '/start command');
+      await this.showMainMenu(ctx);
+    });
 
     bot.command('menu', async (ctx) => {
       if (!this.isAuthorized(ctx)) return;
@@ -177,6 +178,46 @@ export class ControlPanel {
       if (!this.isAuthorized(ctx)) return;
       if (!this.isPrivateChat(ctx)) return;
       await this.showModelMenu(ctx);
+    });
+
+    // Intercept free-text replies for active Control Center input modes
+    // (e.g. entering a new Base URL or API key). Normal messages fall through
+    // to the generic AgentCore handler.
+    bot.on('message:text', async (ctx: Context, next: NextFunction) => {
+      if (!this.isAuthorized(ctx)) {
+        await next();
+        return;
+      }
+      if (!this.isPrivateChat(ctx)) {
+        await next();
+        return;
+      }
+
+      const userId = ctx.from?.id;
+      const text = ctx.message?.text;
+      if (userId === undefined || text === undefined) {
+        await next();
+        return;
+      }
+
+      const pending = this.pendingInput.get(userId);
+      if (!pending) {
+        await next();
+        return;
+      }
+
+      this.pendingInput.delete(userId);
+
+      try {
+        if (pending.mode === 'provider_base_url') {
+          await this.handleProviderBaseUrlInput(ctx, text);
+        } else if (pending.mode === 'provider_api_key') {
+          await this.handleProviderApiKeyInput(ctx, text);
+        }
+      } catch (error) {
+        logger.error({ error, userId }, 'Control panel input mode failed');
+        await ctx.reply('❌ <b>Update failed</b>\n\nPlease try again.', { parse_mode: 'HTML' }).catch(() => {});
+      }
     });
 
     bot.on('callback_query:data', async (ctx) => {
@@ -364,9 +405,9 @@ export class ControlPanel {
 
     const keyboard = new InlineKeyboard()
       .text('🤖 Agent', 'menu:agent')
-      .text('🧠 Intelligence', 'menu:intelligence')
-      .row()
       .text('🖥️ Server', 'menu:server')
+      .row()
+      .text('🧠 Intelligence', 'menu:intelligence')
       .text('🌐 Network', 'menu:network')
       .row()
       .text('⏰ Automation', 'menu:automation')
@@ -375,9 +416,7 @@ export class ControlPanel {
       .text('⚙️ Settings', 'menu:settings')
       .text('📋 Monitoring', 'menu:monitoring')
       .row()
-      .text('ℹ️ About', 'menu:about')
-      .row()
-      .text('🔄 Refresh', 'menu:refresh');
+      .text('ℹ️ About', 'menu:about');
 
     if (ctx.callbackQuery) {
       await this.editMenu(ctx, text, keyboard);
@@ -394,7 +433,7 @@ export class ControlPanel {
   // ---------------------------------------------------------------------------
 
   private async showAgentMenu(ctx: Context): Promise<void> {
-    const text = `🤖 <b>Agent</b>\n\nModel selection and provider connection.`;
+    const text = '🤖 <b>Agent</b>';
     const keyboard = new InlineKeyboard()
       .text('🤖 Model', 'menu:model')
       .text('🔌 Provider', 'menu:provider')
@@ -483,14 +522,13 @@ export class ControlPanel {
 
   private async showModelMenu(ctx: Context): Promise<void> {
     const { user } = await this.resolveUser(ctx);
-    const current = this.deps.userSettings.getModel(user.id) ?? this.deps.config.LLM_MODEL ?? 'not configured';
+    const current = this.deps.userSettings.getModel(user.id) ?? this.deps.runtimeConfig.getDefaultModel() ?? 'not configured';
 
     const text = `🤖 <b>Model</b>\n\nCurrent:\n<code>${this.escape(current)}</code>`;
     const keyboard = new InlineKeyboard()
-      .text('📋 Select Model', 'menu:model:list:0')
+      .text('🤖 Models', 'menu:model:list:0')
       .row()
       .text('🔄 Refresh Models', 'menu:model:refresh')
-      .text('🔌 Provider', 'menu:provider')
       .row()
       .add(this.backFor('model'));
 
@@ -508,10 +546,9 @@ export class ControlPanel {
       const models = await this.deps.modelCatalog.listModels({ refresh: true });
       const text = `🤖 <b>Model</b>\n\n✓ <i>${models.length} models available</i>`;
       const keyboard = new InlineKeyboard()
-        .text('📋 Select Model', 'menu:model:list:0')
+        .text('🤖 Models', 'menu:model:list:0')
         .row()
         .text('🔄 Refresh Models', 'menu:model:refresh')
-        .text('🔌 Provider', 'menu:provider')
         .row()
         .add(this.backFor('model'));
       await this.editMenu(ctx, text, keyboard);
@@ -537,7 +574,7 @@ export class ControlPanel {
     const tokenMap = new Map<string, string>();
     this.modelTokens.set(user.id, tokenMap);
 
-    const currentModel = this.deps.userSettings.getModel(user.id) ?? this.deps.config.LLM_MODEL;
+    const currentModel = this.deps.userSettings.getModel(user.id) ?? this.deps.runtimeConfig.getDefaultModel();
 
     const keyboard = new InlineKeyboard();
     for (let i = 0; i < pageModels.length; i++) {
@@ -579,10 +616,9 @@ export class ControlPanel {
 
     const text = `🤖 <b>Model</b>\n\nCurrent:\n<code>${this.escape(modelId)}</code>\n\n✓ <i>Model updated</i>`;
     const keyboard = new InlineKeyboard()
-      .text('📋 Select Model', 'menu:model:list:0')
+      .text('🤖 Models', 'menu:model:list:0')
       .row()
       .text('🔄 Refresh Models', 'menu:model:refresh')
-      .text('🔌 Provider', 'menu:provider')
       .row()
       .add(this.backFor('model'));
 
@@ -595,40 +631,49 @@ export class ControlPanel {
   // ---------------------------------------------------------------------------
 
   private async dispatchProvider(ctx: Context, action: CallbackAction): Promise<void> {
-    if (action.sub === 'test') {
-      await this.testProviderConnection(ctx);
-      return;
+    switch (action.sub) {
+      case 'test':
+        await this.testProviderConnection(ctx);
+        return;
+      case 'base_url':
+        await this.promptProviderBaseUrl(ctx);
+        return;
+      case 'api_key':
+        await this.promptProviderApiKey(ctx);
+        return;
+      default:
+        await this.showProviderMenu(ctx);
     }
-    await this.showProviderMenu(ctx);
   }
 
-  private async showProviderMenu(ctx: Context): Promise<void> {
-    const baseUrl = this.deps.config.LLM_API_BASE ?? 'not configured';
-    const safeUrl = this.redactUrl(baseUrl);
-    const status = await this.deps.modelCatalog.testConnection();
-    const statusLine = status.ok
-      ? '● <b>Connected</b>'
-      : `⚠️ <b>Error</b>\n<code>${this.escape(status.error?.slice(0, 200) ?? 'unknown')}</code>`;
+  private async showProviderMenu(ctx: Context, sendAsReply = false): Promise<void> {
+    const baseUrl = this.deps.runtimeConfig.getApiBase();
 
     const text =
       `🔌 <b>Provider</b>\n\n` +
-      `Current:\n<code>${this.escape(safeUrl)}</code>\n\n` +
-      `Base URL:\n<code>${this.escape(safeUrl)}</code>\n\n` +
-      `Status:\n${statusLine}`;
+      `Provider:\n<code>OpenAI-Compatible</code>\n\n` +
+      `Base URL:\n<code>${this.escape(baseUrl || 'not configured')}</code>\n\n` +
+      `API Key:\n<code>${this.escape(this.deps.runtimeConfig.maskApiKey())}</code>`;
 
     const keyboard = new InlineKeyboard()
-      .text('🔄 Test Connection', 'menu:provider:test')
+      .text('🌐 Base URL', 'menu:provider:base_url')
+      .text('🔑 API Key', 'menu:provider:api_key')
       .row()
+      .text('🧪 Test Connection', 'menu:provider:test')
       .text('🤖 Models', 'menu:model')
       .row()
       .add(this.backFor('provider'));
 
-    await this.editMenu(ctx, text, keyboard);
-    await this.answer(ctx);
+    if (sendAsReply) {
+      await ctx.reply(ensureTelegramText(text), { parse_mode: 'HTML', reply_markup: keyboard });
+    } else {
+      await this.editMenu(ctx, text, keyboard);
+      await this.answer(ctx);
+    }
   }
 
   private async testProviderConnection(ctx: Context): Promise<void> {
-    await this.answer(ctx, '🔄 Testing connection...');
+    await this.answer(ctx, '🧪 Testing connection...');
     const status = await this.deps.modelCatalog.testConnection();
     const statusLine = status.ok
       ? '✓ <b>Connected</b>'
@@ -636,11 +681,11 @@ export class ControlPanel {
 
     const text =
       `🔌 <b>Provider</b>\n\n` +
-      `Base URL:\n<code>${this.escape(this.redactUrl(this.deps.config.LLM_API_BASE ?? ''))}</code>\n\n` +
+      `Base URL:\n<code>${this.escape(this.deps.runtimeConfig.getApiBase() || 'not configured')}</code>\n\n` +
       `Status:\n${statusLine}`;
 
     const keyboard = new InlineKeyboard()
-      .text('🔄 Test Connection', 'menu:provider:test')
+      .text('🧪 Test Connection', 'menu:provider:test')
       .row()
       .text('🤖 Models', 'menu:model')
       .row()
@@ -650,17 +695,70 @@ export class ControlPanel {
     await this.answer(ctx);
   }
 
-  private redactUrl(url: string): string {
+  private async promptProviderBaseUrl(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (userId === undefined) return;
+    this.pendingInput.set(userId, { mode: 'provider_base_url' });
+    const text =
+      `🌐 <b>Base URL</b>\n\n` +
+      `Send the new base URL for the OpenAI-compatible provider.\n\n` +
+      `Example: <code>https://api.example.com/v1</code>`;
+    await this.editMenu(ctx, text, new InlineKeyboard().add(this.backFor('provider')));
+    await this.answer(ctx, 'Send the new base URL');
+  }
+
+  private async handleProviderBaseUrlInput(ctx: Context, text: string): Promise<void> {
     try {
-      const parsed = new URL(url);
-      if (parsed.password) parsed.password = '***';
-      parsed.searchParams.forEach((_, key) => {
-        if (/key|token|secret/i.test(key)) parsed.searchParams.set(key, '***');
+      this.deps.runtimeConfig.setApiBase(text);
+      this.deps.audit?.record({
+        userId: (await this.resolveUser(ctx)).user.id,
+        eventType: 'provider_base_url_updated',
+        metadata: { base_url: this.deps.runtimeConfig.getApiBase() },
       });
-      return parsed.toString();
-    } catch {
-      return url;
+      await ctx.reply('✓ <b>Base URL updated</b>', { parse_mode: 'HTML' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid URL';
+      await ctx.reply(`❌ <b>Invalid base URL</b>\n\n${this.escape(message)}`, { parse_mode: 'HTML' });
     }
+    await this.showProviderMenu(ctx, true);
+  }
+
+  private async promptProviderApiKey(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (userId === undefined) return;
+    this.pendingInput.set(userId, { mode: 'provider_api_key' });
+    const text =
+      `🔑 <b>API Key</b>\n\n` +
+      `Send the new API key in a private message.\n\n` +
+      `It will be stored securely and deleted from the chat when possible.`;
+    await this.editMenu(ctx, text, new InlineKeyboard().add(this.backFor('provider')));
+    await this.answer(ctx, 'Send the new API key privately');
+  }
+
+  private async handleProviderApiKeyInput(ctx: Context, text: string): Promise<void> {
+    const messageId = ctx.message?.message_id;
+
+    this.deps.runtimeConfig.setApiKey(text);
+
+    const { user } = await this.resolveUser(ctx);
+    this.deps.audit?.record({
+      userId: user.id,
+      eventType: 'provider_api_key_updated',
+      metadata: {},
+    });
+
+    // Best-effort deletion of the key message so it does not remain in chat.
+    if (messageId !== undefined) {
+      try {
+        await ctx.deleteMessage();
+      } catch {
+        // Deletion may fail due to permissions or message age; the key is
+        // already stored securely, so this is non-fatal.
+      }
+    }
+
+    await ctx.reply('✓ <b>API key updated</b>', { parse_mode: 'HTML' });
+    await this.showProviderMenu(ctx, true);
   }
 
   private escape(text: string): string {

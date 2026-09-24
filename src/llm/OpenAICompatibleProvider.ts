@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
+import { LLMRuntimeConfig } from './LLMRuntimeConfig.js';
 import {
   LLMError,
   LLMInvalidRequestError,
@@ -243,22 +244,24 @@ async function* parseSSE(
 
 
 export class OpenAICompatibleProvider implements LLMProvider {
-  private readonly apiBase: string;
-  private readonly apiKey: string;
-  private readonly model: string;
+  private readonly runtimeConfig: LLMRuntimeConfig;
 
   constructor(
     private readonly config: Config,
     private readonly logger: Logger,
+    runtimeConfig?: LLMRuntimeConfig,
   ) {
-    if (!config.LLM_API_BASE || !config.LLM_API_KEY || !config.LLM_MODEL) {
+    this.runtimeConfig = runtimeConfig ?? new LLMRuntimeConfig(config);
+
+    if (
+      !this.runtimeConfig.getApiBase() ||
+      !this.runtimeConfig.getApiKey() ||
+      !this.runtimeConfig.getDefaultModel()
+    ) {
       throw new LLMInvalidRequestError(
         'LLM_API_BASE, LLM_API_KEY, and LLM_MODEL are required',
       );
     }
-    this.apiBase = config.LLM_API_BASE.replace(/\/+$/, '');
-    this.apiKey = config.LLM_API_KEY;
-    this.model = config.LLM_MODEL;
   }
 
   getCapabilities(): ModelCapability {
@@ -326,7 +329,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     });
 
     const body: Record<string, unknown> = {
-      model: getModelOverride() ?? this.model,
+      model: getModelOverride() ?? this.runtimeConfig.getDefaultModel(),
       messages,
     };
 
@@ -359,7 +362,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
 
   private async fetchWithRetry(request: ChatRequest): Promise<Response> {
-    const url = `${this.apiBase}/chat/completions`;
+    const url = `${this.runtimeConfig.getApiBase()}/chat/completions`;
     const body = JSON.stringify(this.buildRequestBody(request));
     const maxRetries = this.config.LLM_MAX_RETRIES;
     const timeoutMs = this.config.LLM_TIMEOUT_MS;
@@ -381,12 +384,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
       }
 
       try {
-        this.logger.debug({ url, model: this.model, attempt }, 'Sending LLM request');
+        this.logger.debug(
+          { url, model: this.runtimeConfig.getDefaultModel(), attempt },
+          'Sending LLM request',
+        );
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`,
+            Authorization: `Bearer ${this.runtimeConfig.getApiKey()}`,
           },
           body,
           signal: controller.signal,

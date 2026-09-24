@@ -35,3 +35,8 @@ Thumbs.db
 data/*.db
 data/*.db-*
 
+
+# Runtime secrets
+secrets.json
+data/secrets.json
+*.secret.json

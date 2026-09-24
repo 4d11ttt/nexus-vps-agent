@@ -24,9 +24,6 @@ const formatter = new TelegramFormatter();
 const UNAUTHORIZED_MESSAGE =
   'You are not authorized to use this bot.';
 
-const START_MESSAGE =
-  'Halo! Saya NEXUS VPS Agent, agen autonomous untuk VPS Debian Anda. Kirim pesan natural language untuk meminta tugas teknis, contoh: "cek RAM VPS" atau "install nginx".';
-
 const HELP_MESSAGE =
   'Cara menggunakan NEXUS VPS Agent:\n' +
   '- Kirim pesan teks biasa untuk memberi tugas kepada agen.\n' +
@@ -97,16 +94,6 @@ async function sendUnauthorized(
 export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlersDeps): void {
   const { config, agentCore, sessionManager, logger, audit, userSettings } = deps;
   const allowedUserIds = config.TELEGRAM_ALLOWED_USER_IDS ?? [];
-
-  bot.command('start', async (ctx) => {
-    if (!isAuthorizedContext(ctx, allowedUserIds)) {
-      await sendUnauthorized(ctx, logger, audit);
-      return;
-    }
-    if (!isPrivateChat(ctx)) return;
-    logger.info({ telegramUserId: ctx.from?.id }, '/start command');
-    await ctx.reply(START_MESSAGE);
-  });
 
   bot.command('help', async (ctx) => {
     if (!isAuthorizedContext(ctx, allowedUserIds)) {

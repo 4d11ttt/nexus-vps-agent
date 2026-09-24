@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ModelCatalog } from '../../src/llm/ModelCatalog.js';
+import { LLMRuntimeConfig } from '../../src/llm/LLMRuntimeConfig.js';
 import type { Config } from '../../src/config.js';
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -18,8 +19,16 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     LLM_API_BASE: 'https://api.example.com/v1',
     LLM_API_KEY: 'fake-key',
     LLM_MODEL: 'default-model',
+    LLM_SECRETS_PATH: './data/test-catalog-secrets.json',
     ...overrides,
   } as Config;
+}
+
+function makeCatalog(overrides: Partial<Config> = {}): ModelCatalog {
+  return new ModelCatalog({
+    runtimeConfig: new LLMRuntimeConfig(makeConfig(overrides)),
+    logger: makeLogger(),
+  });
 }
 
 function makeLogger() {
@@ -63,7 +72,7 @@ describe('ModelCatalog', () => {
   });
 
   it('fetches and normalizes models from /v1/models', async () => {
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     const models = await catalog.listModels();
 
     expect(fetchSpy).toHaveBeenCalledWith(
@@ -80,10 +89,7 @@ describe('ModelCatalog', () => {
   });
 
   it('avoids /v1/v1 duplication when base already ends with /v1', async () => {
-    const catalog = new ModelCatalog({
-      config: makeConfig({ LLM_API_BASE: 'https://api.example.com/openai/v1/' }),
-      logger: makeLogger(),
-    });
+    const catalog = makeCatalog({ LLM_API_BASE: 'https://api.example.com/openai/v1/' });
     await catalog.listModels();
     expect(fetchSpy).toHaveBeenCalledWith(
       'https://api.example.com/openai/v1/models',
@@ -92,14 +98,14 @@ describe('ModelCatalog', () => {
   });
 
   it('caches results and uses the cache within TTL', async () => {
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     await catalog.listModels();
     await catalog.listModels();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('forces refresh when requested', async () => {
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     await catalog.listModels();
     await catalog.listModels({ refresh: true });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -107,18 +113,18 @@ describe('ModelCatalog', () => {
 
   it('returns a safe error on API failure', async () => {
     fetchSpy.mockResolvedValue(fakeResponse({ error: 'bad request' }, 400, false));
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     await expect(catalog.listModels()).rejects.toThrow('Failed to fetch models (400)');
   });
 
   it('returns a safe error on network/timeout failure', async () => {
     fetchSpy.mockRejectedValue(new Error('network down'));
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     await expect(catalog.listModels()).rejects.toThrow('network down');
   });
 
   it('testConnection returns ok=true on success', async () => {
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     const status = await catalog.testConnection();
     expect(status.ok).toBe(true);
     expect(status.status).toBe(200);
@@ -126,7 +132,7 @@ describe('ModelCatalog', () => {
 
   it('testConnection returns ok=false on failure without throwing', async () => {
     fetchSpy.mockRejectedValue(new Error('timeout'));
-    const catalog = new ModelCatalog({ config: makeConfig(), logger: makeLogger() });
+    const catalog = makeCatalog();
     const status = await catalog.testConnection();
     expect(status.ok).toBe(false);
     expect(status.error).toContain('timeout');

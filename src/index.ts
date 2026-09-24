@@ -6,6 +6,7 @@ import { SessionManager } from './agent/SessionManager.js';
 import { ToolRegistry } from './agent/ToolRegistry.js';
 import { OpenAICompatibleProvider } from './llm/OpenAICompatibleProvider.js';
 import { ModelCatalog } from './llm/ModelCatalog.js';
+import { LLMRuntimeConfig } from './llm/LLMRuntimeConfig.js';
 import { registerCoreTools } from './tools/index.js';
 import { TelegramBot } from './telegram/TelegramBot.js';
 import { MemoryManager } from './memory/MemoryManager.js';
@@ -35,10 +36,15 @@ async function main(): Promise<void> {
 
   const needsLlm = config.TELEGRAM_ENABLED || config.SCHEDULER_ENABLED;
 
-  // 5. Validate LLM configuration for any interface that reaches the agent.
+  // 5. Runtime LLM configuration (loads saved overrides or falls back to env).
+  const llmRuntimeConfig = new LLMRuntimeConfig(config);
+
+  // 6. Validate LLM configuration for any interface that reaches the agent.
   if (
     needsLlm &&
-    (!config.LLM_API_BASE || !config.LLM_API_KEY || !config.LLM_MODEL)
+    (!llmRuntimeConfig.getApiBase() ||
+      !llmRuntimeConfig.getApiKey() ||
+      !llmRuntimeConfig.getDefaultModel())
   ) {
     audit.record({
       userId: null,
@@ -58,14 +64,14 @@ async function main(): Promise<void> {
   let skillManager: SkillManager | undefined;
 
   if (needsLlm) {
-    // 6. Initialize LLM provider.
-    const llm = new OpenAICompatibleProvider(config, logger);
+    // 7. Initialize LLM provider.
+    const llm = new OpenAICompatibleProvider(config, logger, llmRuntimeConfig);
 
-    // 7. Initialize ToolRegistry and register core tools.
+    // 8. Initialize ToolRegistry and register core tools.
     registry = new ToolRegistry();
     registerCoreTools(registry);
 
-    // 8. Initialize memory and skills; register their tools.
+    // 9. Initialize memory and skills; register their tools.
     memoryManager = new MemoryManager({ db, config, logger });
     for (const tool of createMemoryTools(memoryManager)) {
       registry.register(tool);
@@ -77,7 +83,7 @@ async function main(): Promise<void> {
       registry.register(tool);
     }
 
-    // 9. Initialize session manager and agent core.
+    // 10. Initialize session manager and agent core.
     sessionManager = new SessionManager({ db });
     agentCore = new AgentCore({
       llm,
@@ -92,11 +98,11 @@ async function main(): Promise<void> {
     });
   }
 
-  // 10. Shared services for the Telegram control panel.
+  // 11. Shared services for the Telegram control panel.
   const userSettings = new UserSettingsService(db);
-  const modelCatalog = new ModelCatalog({ config, logger });
+  const modelCatalog = new ModelCatalog({ runtimeConfig: llmRuntimeConfig, logger });
 
-  // 11. Initialize scheduler if enabled.
+  // 12. Initialize scheduler if enabled.
   let telegramBot: TelegramBot | undefined;
   let scheduler: Scheduler | undefined;
 
@@ -132,6 +138,7 @@ async function main(): Promise<void> {
       memoryManager,
       skillManager,
       scheduler,
+      runtimeConfig: llmRuntimeConfig,
     });
   }
 

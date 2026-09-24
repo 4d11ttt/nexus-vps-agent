@@ -23,10 +23,12 @@ describe('TelegramFormatter', () => {
       expect(html).toContain('🖥️');
       expect(html).toContain('<b>Server Information</b>');
       expect(html).toContain('<code>armbian</code>');
-      expect(html).toContain('<b>Identity</b>');
-      expect(html).toContain('<b>Hardware</b>');
-      expect(html).toContain('<b>Runtime</b>');
-      expect(html).toContain('✓ <i>Selesai.</i>');
+      expect(html).toContain('Hostname:');
+      expect(html).toContain('Platform:');
+      expect(html).toContain('Kernel:');
+      expect(html).toContain('CPU:');
+      expect(html).toContain('RAM:');
+      expect(html).toContain('✓ <i>Completed</i>');
     });
 
     it('formats raw system_info tool JSON', () => {
@@ -49,6 +51,7 @@ describe('TelegramFormatter', () => {
       expect(html).toContain('<code>armbian</code>');
       expect(html).toContain('<code>4 cores</code>');
       expect(html).toContain('<code>1h 06m</code>');
+      expect(html).toContain('Platform:');
     });
 
     it('omits optional fields that are missing', () => {
@@ -77,10 +80,10 @@ describe('TelegramFormatter', () => {
 
       expect(chunks[0].parseMode).toBe('HTML');
       expect(html).toContain('📊 <b>System Resources</b>');
-      expect(html).toContain('<b>RAM</b>');
+      expect(html).toContain('RAM:');
       expect(html).toContain('<b>14%</b>');
-      expect(html).toContain('<code>Load 1m  1.17</code>');
-      expect(html).toContain('<code>4 cores</code>');
+      expect(html).toContain('CPU:');
+      expect(html).toContain('<code>4 cores · Load 1.17</code>');
     });
   });
 
@@ -99,10 +102,11 @@ describe('TelegramFormatter', () => {
 
       expect(chunks[0].parseMode).toBe('HTML');
       expect(html).toContain('⚡ <b>Speedtest</b>');
-      expect(html).toContain('<pre>');
-      expect(html).toContain('Download   42.31 Mbps');
-      expect(html).toContain('<b>Server</b>');
-      expect(html).toContain('<code>Jakarta</code>');
+      expect(html).not.toContain('<pre>');
+      expect(html).toContain('Download: <b>42.31 Mbps</b>');
+      expect(html).toContain('Upload: <b>18.72 Mbps</b>');
+      expect(html).toContain('Ping: <b>24 ms</b>');
+      expect(html).toContain('Server: <code>Jakarta</code>');
     });
   });
 
@@ -161,11 +165,11 @@ describe('TelegramFormatter', () => {
 
       expect(chunks[0].parseMode).toBe('HTML');
       expect(html).toContain('📁 <b>Files</b>');
-      expect(html).toContain('<pre>');
-      expect(html).toContain('/opt/nexus-vps-agent/');
-      expect(html).toContain('src/');
-      expect(html).toContain('README.md');
-      expect(html).toMatch(/[├└]──/);
+      expect(html).not.toContain('<pre>');
+      expect(html).toContain('/opt/nexus-vps-agent');
+      expect(html).toContain('<code>src</code>');
+      expect(html).toContain('<code>README.md</code>');
+      expect(html).toContain('•');
     });
   });
 
@@ -184,10 +188,9 @@ describe('TelegramFormatter', () => {
 
       expect(chunks[0].parseMode).toBe('HTML');
       expect(html).toContain('⚙️ <b>Processes</b>');
-      expect(html).toContain('<pre>');
-      expect(html).toContain('PID     MEM');
-      expect(html).toContain('15210');
-      expect(html).toContain('node');
+      expect(html).not.toContain('<pre>');
+      expect(html).toContain('<code>15210</code>');
+      expect(html).toContain('<code>node</code>');
     });
   });
 
@@ -206,9 +209,9 @@ describe('TelegramFormatter', () => {
 
       expect(chunks[0].parseMode).toBe('HTML');
       expect(html).toContain('📦 <b>Package Manager</b>');
-      expect(html).toContain('<code>apt update</code>');
-      expect(html).toContain('<b>Status</b>');
-      expect(html).toContain('<code>Success</code>');
+      expect(html).toContain('Command: <code>apt update</code>');
+      expect(html).toContain('Exit code: <code>0</code>');
+      expect(html).toContain('Hit:1 http://deb.debian.org/debian bookworm InRelease');
     });
   });
 
@@ -217,9 +220,17 @@ describe('TelegramFormatter', () => {
       const chunks = formatter.formatError('Command not found: foobar');
       const html = chunks.map((c) => c.text).join('\n');
 
-      expect(html).toContain('✕ <b>Error</b>');
-      expect(html).toContain('<pre>Command not found: foobar</pre>');
-      expect(html).toContain('✕ <i>Gagal memproses permintaan.</i>');
+      expect(html).toContain('❌ <b>Command failed</b>');
+      expect(html).toContain('<code>Command not found: foobar</code>');
+      expect(html).not.toContain('<pre>');
+    });
+
+    it('wraps multi-line errors in a pre block', () => {
+      const chunks = formatter.formatError('Error: nginx failed\nexit code 1\nstderr');
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).toContain('❌ <b>Command failed</b>');
+      expect(html).toContain('<pre>');
     });
   });
 
@@ -312,10 +323,10 @@ describe('TelegramFormatter', () => {
       const chunks = formatter.formatSpeedtest(input);
       const html = chunks.map((c) => c.text).join('\n');
       expect(html).not.toContain('**');
-      expect(html).toContain('Download   42.31 Mbps');
-      expect(html).toContain('Upload     18.72 Mbps');
-      expect(html).toContain('Ping       24 ms');
-      expect(html).toContain('Jakarta');
+      expect(html).toContain('Download: <b>42.31 Mbps</b>');
+      expect(html).toContain('Upload: <b>18.72 Mbps</b>');
+      expect(html).toContain('Ping: <b>24 ms</b>');
+      expect(html).toContain('Server: <code>Jakarta</code>');
     });
 
     it('strips markdown from shell-style pre blocks', () => {

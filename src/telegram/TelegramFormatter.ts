@@ -108,32 +108,19 @@ export class TelegramFormatter {
     const ram = extractValue(response, 'RAM');
     const uptime = extractValue(response, 'Uptime');
 
-    return this.buildSectionedChunks(
-      'Server Information',
-      ICON.system,
-      [
-        {
-          title: 'Identity',
-          lines: [
-            keyValueLine('Hostname', hostname),
-            keyValueLine('Platform', platform),
-            keyValueLine('Kernel', kernel),
-          ].filter((line): line is string => line !== undefined),
-        },
-        {
-          title: 'Hardware',
-          lines: [
-            keyValueLine('CPU', cpu),
-            keyValueLine('RAM', ram),
-          ].filter((line): line is string => line !== undefined),
-        },
-        {
-          title: 'Runtime',
-          lines: [keyValueLine('Uptime', uptime)].filter((line): line is string => line !== undefined),
-        },
-      ],
-      options,
-    );
+    const lines: string[] = [`${ICON.system} ${bold('Server Information')}\n`];
+    if (hostname) lines.push(`Hostname: ${code(stripMarkdown(hostname))}`);
+    if (platform) lines.push(`Platform: ${code(stripMarkdown(platform))}`);
+    if (kernel) lines.push(`Kernel: ${code(stripMarkdown(kernel))}`);
+    if (cpu) lines.push(`CPU: ${code(stripMarkdown(cpu))}`);
+    if (ram) lines.push(`RAM: ${code(stripMarkdown(ram))}`);
+    if (uptime) lines.push(`Uptime: ${code(stripMarkdown(uptime))}`);
+
+    if (lines.length === 1) {
+      return this.formatGeneric(response, options);
+    }
+
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
 
   private formatSystemInfoFromJson(json: Record<string, unknown>, options: FormatOptions): TelegramMessageChunk[] {
@@ -144,32 +131,15 @@ export class TelegramFormatter {
     const ram = json.memoryTotal !== undefined ? `${formatBytes(Number(json.memoryTotal))} total` : undefined;
     const uptime = json.uptime !== undefined ? formatUptime(Number(json.uptime)) : undefined;
 
-    return this.buildSectionedChunks(
-      'Server Information',
-      ICON.system,
-      [
-        {
-          title: 'Identity',
-          lines: [
-            keyValueLine('Hostname', hostname),
-            keyValueLine('Platform', platform),
-            keyValueLine('Kernel', kernel),
-          ].filter((line): line is string => line !== undefined),
-        },
-        {
-          title: 'Hardware',
-          lines: [
-            keyValueLine('CPU', cpu),
-            keyValueLine('RAM', ram),
-          ].filter((line): line is string => line !== undefined),
-        },
-        {
-          title: 'Runtime',
-          lines: [keyValueLine('Uptime', uptime)].filter((line): line is string => line !== undefined),
-        },
-      ],
-      options,
-    );
+    const lines: string[] = [`${ICON.system} ${bold('Server Information')}\n`];
+    if (hostname) lines.push(`Hostname: ${code(hostname)}`);
+    if (platform) lines.push(`Platform: ${code(platform)}`);
+    if (kernel) lines.push(`Kernel: ${code(kernel)}`);
+    if (cpu) lines.push(`CPU: ${code(cpu)}`);
+    if (ram) lines.push(`RAM: ${code(ram)}`);
+    if (uptime) lines.push(`Uptime: ${code(uptime)}`);
+
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
 
   formatResources(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
@@ -178,15 +148,19 @@ export class TelegramFormatter {
       return this.formatResourcesFromJson(json, options);
     }
 
-    const lines: string[] = [];
+    const lines: string[] = [`${ICON.resources} ${bold('System Resources')}\n`];
     const ram = extractValue(response, 'RAM');
-    if (ram) lines.push(`<b>RAM</b>\n${codeLine(ram)}`);
+    if (ram) lines.push(`RAM: ${codeLine(ram)}`);
     const cpu = extractValue(response, 'CPU');
-    if (cpu) lines.push(`<b>CPU</b>\n${codeLine(cpu)}`);
+    if (cpu) lines.push(`CPU: ${codeLine(cpu)}`);
     const uptime = extractValue(response, 'Uptime');
-    if (uptime) lines.push(`<b>Uptime</b>\n${codeLine(uptime)}`);
+    if (uptime) lines.push(`Uptime: ${codeLine(uptime)}`);
 
-    return this.buildInfoChunks('System Resources', ICON.resources, lines, options);
+    if (lines.length === 1) {
+      return this.formatGeneric(response, options);
+    }
+
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
 
   private formatResourcesFromJson(json: Record<string, unknown>, options: FormatOptions): TelegramMessageChunk[] {
@@ -196,20 +170,21 @@ export class TelegramFormatter {
     const load = Array.isArray(json.loadAverage) ? json.loadAverage : [];
     const load1m = load[0] !== undefined ? Number(load[0]).toFixed(2) : undefined;
 
-    const lines: string[] = [];
-    lines.push(`<b>RAM</b>\n${codeLine(`${formatBytes(used)} / ${formatBytes(total)}`)} · <b>${percent}%</b>`);
-    if (load1m !== undefined) {
-      lines.push(`<b>CPU</b>\n${codeLine(`Load 1m  ${load1m}`)}`);
-    }
-    if (json.cpuCount !== undefined) {
-      lines.push(codeLine(`${json.cpuCount} cores`));
+    const lines: string[] = [`${ICON.resources} ${bold('System Resources')}\n`];
+    lines.push(`RAM: ${code(`${formatBytes(used)} / ${formatBytes(total)}`)} · <b>${percent}%</b>`);
+    const cpuParts: string[] = [];
+    if (json.cpuCount !== undefined) cpuParts.push(`${json.cpuCount} cores`);
+    if (load1m !== undefined) cpuParts.push(`Load ${load1m}`);
+    if (cpuParts.length > 0) {
+      lines.push(`CPU: ${code(cpuParts.join(' · '))}`);
     }
     if (json.uptime !== undefined) {
-      lines.push(`<b>Uptime</b>\n${codeLine(formatUptime(Number(json.uptime)))}`);
+      lines.push(`Uptime: ${code(formatUptime(Number(json.uptime)))}`);
     }
 
-    return this.buildInfoChunks('System Resources', ICON.resources, lines, options);
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
+
   formatSpeedtest(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
     const json = tryParseJson(response);
     if (isPlainObject(json)) {
@@ -224,18 +199,7 @@ export class TelegramFormatter {
     const server = extractValueLoose(clean, 'Server');
 
     if (download || upload || ping) {
-      const rows: string[] = [];
-      if (download) rows.push(`Download   ${download}`);
-      if (upload) rows.push(`Upload     ${upload}`);
-      if (ping) rows.push(`Ping       ${ping}`);
-      if (jitter) rows.push(`Jitter     ${jitter}`);
-
-      const parts: string[] = [`${ICON.speedtest} ${bold('Speedtest')}\n`];
-      parts.push(pre(rows.join('\n')));
-      if (server) {
-        parts.push(`\n${bold('Server')}\n${code(server)}`);
-      }
-      return this.wrapHtmlChunk(parts.join('') + this.footerHtml(options));
+      return this.buildSpeedtestChunks(download, upload, ping, jitter, server, options);
     }
 
     const preBlock = extractPreformattedBlock(response) ?? clean;
@@ -243,18 +207,32 @@ export class TelegramFormatter {
   }
 
   private formatSpeedtestFromJson(json: Record<string, unknown>, options: FormatOptions): TelegramMessageChunk[] {
-    const rows: string[] = [];
-    if (json.download !== undefined) rows.push(`Download   ${json.download}`);
-    if (json.upload !== undefined) rows.push(`Upload     ${json.upload}`);
-    if (json.ping !== undefined) rows.push(`Ping       ${json.ping}`);
-    if (json.jitter !== undefined) rows.push(`Jitter     ${json.jitter}`);
+    return this.buildSpeedtestChunks(
+      stringOrUndefined(json.download),
+      stringOrUndefined(json.upload),
+      stringOrUndefined(json.ping),
+      stringOrUndefined(json.jitter),
+      stringOrUndefined(json.server),
+      options,
+    );
+  }
 
-    const parts: string[] = [`${ICON.speedtest} ${bold('Speedtest')}\n`];
-    if (rows.length > 0) parts.push(pre(rows.join('\n')));
-    if (json.server !== undefined) {
-      parts.push(`\n${bold('Server')}\n${code(String(json.server))}`);
-    }
-    return this.wrapHtmlChunk(parts.join('') + this.footerHtml(options));
+  private buildSpeedtestChunks(
+    download: string | undefined,
+    upload: string | undefined,
+    ping: string | undefined,
+    jitter: string | undefined,
+    server: string | undefined,
+    options: FormatOptions,
+  ): TelegramMessageChunk[] {
+    const lines: string[] = [`${ICON.speedtest} ${bold('Speedtest')}\n`];
+    if (download) lines.push(`Download: <b>${escapeHtml(stripMarkdown(download))}</b>`);
+    if (upload) lines.push(`Upload: <b>${escapeHtml(stripMarkdown(upload))}</b>`);
+    if (ping) lines.push(`Ping: <b>${escapeHtml(stripMarkdown(ping))}</b>`);
+    if (jitter) lines.push(`Jitter: <b>${escapeHtml(stripMarkdown(jitter))}</b>`);
+    if (server) lines.push(`\nServer: ${code(stripMarkdown(server))}`);
+
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
 
   formatFilesystem(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
@@ -269,8 +247,17 @@ export class TelegramFormatter {
   private formatFilesystemFromJson(json: Record<string, unknown>, options: FormatOptions): TelegramMessageChunk[] {
     const path = String(json.path ?? '');
     const items = Array.isArray(json.items) ? (json.items as Array<Record<string, unknown>>) : [];
-    const tree = buildTree(path, items);
-    return this.buildBlockChunks('Files', ICON.files, tree, options);
+
+    const lines: string[] = [`${ICON.files} ${bold('Files')}\n`];
+    if (path) lines.push(`Path: ${code(path)}\n`);
+    for (const item of items.slice(0, 100)) {
+      const name = String(item.name ?? '');
+      const type = String(item.type ?? 'file');
+      const icon = type === 'directory' ? '📁' : '📄';
+      if (name) lines.push(`• ${icon} ${code(name)}`);
+    }
+
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
 
   formatProcesses(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
@@ -284,14 +271,19 @@ export class TelegramFormatter {
 
   private formatProcessesFromJson(json: Record<string, unknown>, options: FormatOptions): TelegramMessageChunk[] {
     const processes = Array.isArray(json.processes) ? (json.processes as Array<Record<string, unknown>>) : [];
-    const rows: string[] = ['PID     MEM         COMMAND'];
+    const lines: string[] = [`${ICON.process} ${bold('Processes')}\n`];
     for (const p of processes.slice(0, 50)) {
-      const pid = String(p.pid ?? '').padEnd(7);
-      const mem = p.memory !== undefined ? formatBytes(Number(p.memory)).padEnd(11) : ''.padEnd(11);
+      const pid = String(p.pid ?? '');
+      const mem = p.memory !== undefined ? formatBytes(Number(p.memory)) : '';
       const cmd = String(p.command ?? '').slice(0, 60);
-      rows.push(`${pid}${mem}${cmd}`);
+      const parts = [`PID ${code(pid)}`];
+      if (mem) parts.push(`MEM ${code(mem)}`);
+      parts.push(`CMD ${code(cmd)}`);
+      lines.push(`• ${parts.join(' · ')}`);
     }
-    return this.buildBlockChunks('Processes', ICON.process, rows.join('\n'), options);
+    if (processes.length === 0) lines.push('No processes found.');
+
+    return this.wrapHtmlChunk(lines.join('\n') + this.footerHtml(options));
   }
 
   formatPackageManager(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
@@ -307,21 +299,18 @@ export class TelegramFormatter {
     const action = String(json.action ?? 'run');
     const pkg = json.package !== undefined ? String(json.package) : undefined;
     const success = json.success === true;
+    const exitCode = json.exitCode !== undefined ? Number(json.exitCode) : undefined;
 
-    const parts: string[] = [`${ICON.packages} ${bold('Package Manager')}\n`];
-    const commandLabel = pkg ? `apt ${action} ${pkg}` : `apt ${action}`;
-    parts.push(code(commandLabel));
+    const lines: string[] = [`${ICON.packages} ${bold('Package Manager')}\n`];
+    lines.push(`Command: ${code(pkg ? `apt ${action} ${pkg}` : `apt ${action}`)}`);
+    if (exitCode !== undefined) lines.push(`Exit code: ${code(String(exitCode))}`);
 
     const stdout = hasStringField(json, 'stdout') ? String(json.stdout).trim() : '';
     const stderr = hasStringField(json, 'stderr') ? String(json.stderr).trim() : '';
-    if (stdout.length > 0 && stdout.length < 800) parts.push(`\n${bold('Output')}\n${pre(stdout)}`);
-    if (stderr.length > 0 && stderr.length < 800) parts.push(`\n${bold('Stderr')}\n${pre(stderr)}`);
+    if (stdout.length > 0) lines.push(`\nOutput:\n<pre>${escapeHtml(stdout.slice(0, 1200))}</pre>`);
+    if (stderr.length > 0) lines.push(`\nStderr:\n<pre>${escapeHtml(stderr.slice(0, 1200))}</pre>`);
 
-    const statusText =
-      success ? 'Success' : json.exitCode !== undefined && json.exitCode !== 0 ? `Exit code ${json.exitCode}` : 'Completed';
-    parts.push(`\n${bold('Status')}\n${code(statusText)}`);
-
-    return this.wrapHtmlChunk(parts.join('') + this.footerHtml(options, success ? 'Packages processed' : undefined));
+    return this.wrapHtmlChunk(lines.join('') + this.footerHtml(options, success ? 'Packages processed' : undefined));
   }
 
   formatShell(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
@@ -346,14 +335,15 @@ export class TelegramFormatter {
 
   formatError(response: string, _options: FormatOptions = {}): TelegramMessageChunk[] {
     const clean = stripMarkdownBlock(response.trim());
-    const chunks = splitMessage(clean, MAX_CHUNK_LENGTH);
-    const parts: TelegramMessageChunk[] = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const header = i === 0 ? `${ICON.error} ${bold('Error')}\n` : '';
-      parts.push({ text: header + pre(chunks[i]), parseMode: 'HTML' });
+    const header = `❌ <b>Command failed</b>\n\n`;
+
+    // Short, single-line errors: keep them as normal text.
+    if (!clean.includes('\n') && clean.length <= 120) {
+      return this.wrapHtmlChunk(header + code(clean));
     }
-    parts.push({ text: `${ICON.error} ${italic('Gagal memproses permintaan.')}`, parseMode: 'HTML' });
-    return parts;
+
+    // Multi-line or long errors: only the actual error output goes into <pre>.
+    return this.wrapHtmlChunk(header + pre(clean));
   }
 
   formatGeneric(response: string, options: FormatOptions = {}): TelegramMessageChunk[] {
@@ -380,46 +370,6 @@ export class TelegramFormatter {
     const footer = this.footerHtml(options);
     return this.wrapHtmlChunk(converted + footer);
   }
-
-  private buildInfoChunks(
-    title: string,
-    icon: string,
-    lines: string[],
-    options: FormatOptions,
-  ): TelegramMessageChunk[] {
-    if (lines.length === 0) {
-      return this.formatGeneric(title, options);
-    }
-
-    const parts: string[] = [`${icon} ${bold(title)}\n`];
-    const groupSize = 4;
-    for (let i = 0; i < lines.length; i += groupSize) {
-      const group = lines.slice(i, i + groupSize);
-      if (i > 0) parts.push('\n');
-      parts.push(group.join('\n'));
-    }
-
-    return this.wrapHtmlChunk(parts.join('') + this.footerHtml(options));
-  }
-  private buildSectionedChunks(
-    title: string,
-    icon: string,
-    sections: Array<{ title: string; lines: string[] }>,
-    options: FormatOptions,
-  ): TelegramMessageChunk[] {
-    const nonEmpty = sections.filter((section) => section.lines.length > 0);
-    if (nonEmpty.length === 0) {
-      return this.formatGeneric(title, options);
-    }
-
-    const parts: string[] = [`${icon} ${bold(title)}`];
-    for (const section of nonEmpty) {
-      parts.push(`\n\n<b>${escapeHtml(section.title)}</b>\n${section.lines.join('\n')}`);
-    }
-
-    return this.wrapHtmlChunk(parts.join('') + this.footerHtml(options));
-  }
-
 
   private buildBlockChunks(
     title: string,
@@ -475,14 +425,14 @@ export class TelegramFormatter {
     }
     switch (options.finishReason) {
       case 'error':
-        return { icon: ICON.error, text: 'Gagal memproses permintaan.' };
+        return { icon: ICON.error, text: 'Failed to process request.' };
       case 'iteration_limit':
-        return { icon: ICON.warning, text: 'Batas iterasi tercapai.' };
+        return { icon: ICON.warning, text: 'Iteration limit reached.' };
       case 'aborted':
-        return { icon: ICON.warning, text: 'Dibatalkan.' };
+        return { icon: ICON.warning, text: 'Aborted.' };
       case 'completed':
       default:
-        return { icon: ICON.success, text: 'Selesai.' };
+        return { icon: ICON.success, text: 'Completed' };
     }
   }
 }
@@ -514,11 +464,6 @@ function codeLine(text: string): string {
 
 function pre(text: string): string {
   return `<pre>${escapeHtml(text)}</pre>`;
-}
-
-function keyValueLine(label: string, value: string | undefined): string | undefined {
-  if (value === undefined || value.length === 0) return undefined;
-  return `• ${escapeHtml(label)} — ${code(stripMarkdown(value))}`;
 }
 
 function stripMarkdown(text: string): string {
@@ -599,20 +544,6 @@ function buildPlatformString(json: Record<string, unknown>): string | undefined 
   if (arch) parts.push(arch);
   if (version) parts.push(`(${version})`);
   return parts.length > 0 ? parts.join(' ') : undefined;
-}
-
-function buildTree(path: string, items: Array<Record<string, unknown>>): string {
-  const lines: string[] = [path.endsWith('/') ? path : `${path}/`];
-  const sorted = [...items].sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
-  for (let i = 0; i < sorted.length; i++) {
-    const item = sorted[i];
-    const isLast = i === sorted.length - 1;
-    const prefix = isLast ? '└── ' : '├── ';
-    const name = String(item.name ?? '');
-    const type = String(item.type ?? '');
-    lines.push(`${prefix}${type === 'directory' ? `${name}/` : name}`);
-  }
-  return lines.join('\n');
 }
 
 function extractValue(text: string, label: string): string | undefined {

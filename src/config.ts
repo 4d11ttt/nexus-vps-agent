@@ -29,6 +29,7 @@ const configSchema = z.object({
   LLM_API_BASE: z.string().url().optional(),
   LLM_API_KEY: z.string().min(1).optional(),
   LLM_MODEL: z.string().min(1).optional(),
+  LLM_SECRETS_PATH: z.string().optional(),
   LLM_TEMPERATURE: z.preprocess(
     (val) => (typeof val === 'string' ? Number(val) : val),
     z.number().min(0).max(2).optional(),

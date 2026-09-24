@@ -153,13 +153,6 @@ describe('registerTelegramHandlers', () => {
     expect(agentCore.run).not.toHaveBeenCalled();
   });
 
-  it('replies to /start', async () => {
-    const ctx = makeContext({ userId: 123, text: '/start' });
-    const handler = fakeBot.commands.get('start');
-    await handler!(ctx);
-    expect(ctx.reply).toHaveBeenCalledWith(expect.stringContaining('Halo!'));
-  });
-
   it('replies to /help', async () => {
     const ctx = makeContext({ userId: 123, text: '/help' });
     const handler = fakeBot.commands.get('help');
