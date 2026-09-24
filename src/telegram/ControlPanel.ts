@@ -65,6 +65,56 @@ export function parentMenuOf(screen: string): string {
 }
 
 /**
+ * Guard for outgoing Telegram Control Center message text.
+ *
+ * Telegram rejects empty / invisible-only payloads with
+ * `400 Bad Request: text must be non-empty` (a payload that renders as
+ * nothing, such as a stray zero-width character, is rejected too). Every
+ * Control Center message must therefore carry real visible text. If an
+ * empty or invisible-only value ever reaches this helper, fall back to the
+ * compact main-menu text instead of sending a rejected payload.
+ */
+export function ensureTelegramText(text: string): string {
+  const visible = stripInvisible(text).length > 0;
+  return visible ? text : MAIN_MENU_TEXT;
+}
+
+/** Remove invisible placeholder characters Telegram treats as empty. */
+function stripInvisible(text: string): string {
+  // U+200B/U+200C/U+200D zero-width characters and U+FEFF BOM render as
+  // nothing and make Telegram reject the payload as empty text.
+  const invisibles = [
+    String.fromCharCode(0x200b),
+    String.fromCharCode(0x200c),
+    String.fromCharCode(0x200d),
+    String.fromCharCode(0xfeff),
+  ];
+  let visible = text;
+  for (const ch of invisibles) {
+    visible = visible.split(ch).join('');
+  }
+  return visible.trim();
+}
+
+/** The canonical Control Center main-menu message text. */
+const MAIN_MENU_TEXT =
+  '⚡ <b>NEXUS VPS</b>\n\n' +
+  '<b>Control Center</b>\n' +
+  'Manage your VPS, agent and automation.\n\n' +
+  '<b>Agent</b>\n' +
+  'Model · Provider · Memory · Skills\n\n' +
+  '<b>Server</b>\n' +
+  'System · Network\n\n' +
+  '<b>Automation</b>\n' +
+  'Scheduler · Jobs\n\n' +
+  '<b>Channels</b>\n' +
+  'Telegram · WebSocket\n\n' +
+  '<b>Settings</b>\n' +
+  'Runtime configuration\n\n' +
+  '<b>Monitoring</b>\n' +
+  'Logs · Audit';
+
+/**
  * Detect Telegram's benign "message is not modified" error (HTTP 400), raised
  * when an edit would produce content identical to the current message. grammY
  * exposes the description on the error itself, on `response`, or on `payload`
@@ -282,7 +332,9 @@ export class ControlPanel {
     text: string,
     keyboard: InlineKeyboard,
   ): Promise<void> {
-    await ctx.editMessageText(text, {
+    // Guard every Control Center edit: Telegram rejects empty /
+    // invisible-only payloads with 400 "text must be non-empty".
+    await ctx.editMessageText(ensureTelegramText(text), {
       parse_mode: 'HTML',
       reply_markup: keyboard,
     });
@@ -306,33 +358,33 @@ export class ControlPanel {
   // ---------------------------------------------------------------------------
 
   private async showMainMenu(ctx: Context): Promise<void> {
-    const text =
-      '⚡ <b>NEXUS VPS</b>\n\n' +
-      '<b>Agent</b> — Model · Provider\n' +
-      '<b>Server</b> — System · Resources · Processes · Storage · Network\n' +
-      '<b>Intelligence</b> — Memory · Skills\n' +
-      '<b>Automation</b> — Scheduler · Jobs\n' +
-      '<b>Channels</b> — Telegram · WebSocket\n' +
-      '<b>Monitoring</b> — Logs · Audit\n' +
-      '<b>Settings</b> — Runtime configuration';
+    // Real visible text only: Telegram rejects empty / invisible-only
+    // payloads with 400 "text must be non-empty".
+    const text = MAIN_MENU_TEXT;
 
     const keyboard = new InlineKeyboard()
       .text('🤖 Agent', 'menu:agent')
-      .text('🖥️ Server', 'menu:server')
-      .row()
       .text('🧠 Intelligence', 'menu:intelligence')
+      .row()
+      .text('🖥️ Server', 'menu:server')
+      .text('🌐 Network', 'menu:network')
+      .row()
       .text('⏰ Automation', 'menu:automation')
-      .row()
       .text('📡 Channels', 'menu:channels')
-      .text('📜 Monitoring', 'menu:monitoring')
       .row()
-      .text('⚙️ Settings', 'menu:settings');
+      .text('⚙️ Settings', 'menu:settings')
+      .text('📋 Monitoring', 'menu:monitoring')
+      .row()
+      .text('ℹ️ About', 'menu:about')
+      .row()
+      .text('🔄 Refresh', 'menu:refresh');
 
     if (ctx.callbackQuery) {
       await this.editMenu(ctx, text, keyboard);
       await this.answer(ctx);
     } else {
-      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
+      // Single Control Center message for /menu: real text plus keyboard.
+      await ctx.reply(ensureTelegramText(text), { parse_mode: 'HTML', reply_markup: keyboard });
     }
   }
 
@@ -446,7 +498,7 @@ export class ControlPanel {
       await this.editMenu(ctx, text, keyboard);
       await this.answer(ctx);
     } else {
-      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
+      await ctx.reply(ensureTelegramText(text), { parse_mode: 'HTML', reply_markup: keyboard });
     }
   }
 

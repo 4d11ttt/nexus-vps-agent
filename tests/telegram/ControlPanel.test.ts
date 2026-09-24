@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ControlPanel, isMessageNotModifiedError, parentMenuOf } from '../../src/telegram/ControlPanel.js';
+import { ControlPanel, ensureTelegramText, isMessageNotModifiedError, parentMenuOf } from '../../src/telegram/ControlPanel.js';
 import type { Context } from 'grammy';
 import type { Config } from '../../src/config.js';
 import type { SessionManager } from '../../src/agent/SessionManager.js';
@@ -67,6 +67,21 @@ function makeContext(overrides: {
     editMessageText: vi.fn().mockResolvedValue(undefined),
     answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
   } as unknown as Context;
+}
+
+/** Remove invisible/control characters like Telegram's empty-text check does. */
+function stripControl(text: string): string {
+  const invisibles = [
+    String.fromCharCode(0x200b),
+    String.fromCharCode(0x200c),
+    String.fromCharCode(0x200d),
+    String.fromCharCode(0xfeff),
+  ];
+  let out = text;
+  for (const ch of invisibles) {
+    out = out.split(ch).join('');
+  }
+  return out.trim();
 }
 
 
@@ -139,14 +154,29 @@ describe('ControlPanel', () => {
     const ctx = makeContext({ userId: 123, text: '/menu' });
     const handler = bot.commands.get('menu')!;
     await handler(ctx);
+    expect(ctx.reply).toHaveBeenCalledTimes(1);
     expect(ctx.reply).toHaveBeenCalledWith(
       expect.stringContaining('NEXUS VPS'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
+    const sentText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    // Real visible text only: never an empty or invisible-only payload
+    // (Telegram rejects those with 400 "text must be non-empty").
+    expect(sentText.trim().length).toBeGreaterThan(0);
+    expect(stripControl(sentText).length).toBeGreaterThan(0);
+    expect(sentText).toBe(stripControl(sentText));
+    expect(ctx.editMessageText).not.toHaveBeenCalled();
+    expect(sentText).not.toContain('Files');
+    expect(sentText).not.toContain('<pre>');
+    expect(modelCatalog.listModels as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(memoryManager.list as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(skillManager.discover as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(sessionManager.ensureUser as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     const markup = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][1]?.reply_markup as {
       inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     };
     const buttons = markup.inline_keyboard.flat();
+    expect(buttons.length).toBeGreaterThan(0);
     const labels = buttons.map((b) => b.text).join(' ');
     for (const expected of [
       'Agent',
@@ -156,6 +186,9 @@ describe('ControlPanel', () => {
       'Channels',
       'Monitoring',
       'Settings',
+      'Network',
+      'About',
+      'Refresh',
     ]) {
       expect(labels).toContain(expected);
     }
@@ -168,23 +201,35 @@ describe('ControlPanel', () => {
       'Resources',
       'Processes',
       'Storage',
-      'Network',
       'Scheduler',
       'Logs',
-      'About',
-      'Refresh',
     ]) {
       expect(labels).not.toContain(hidden);
     }
     expect(buttons.map((b) => b.callback_data)).toEqual([
       'menu:agent',
-      'menu:server',
       'menu:intelligence',
+      'menu:server',
+      'menu:network',
       'menu:automation',
       'menu:channels',
-      'menu:monitoring',
       'menu:settings',
+      'menu:monitoring',
+      'menu:about',
+      'menu:refresh',
     ]);
+    const callbacks = buttons.map((b) => b.callback_data);
+    expect(callbacks).not.toContain('menu:model');
+    expect(callbacks).not.toContain('menu:provider');
+    expect(callbacks).not.toContain('menu:memory');
+    expect(callbacks).not.toContain('menu:skills');
+    expect(callbacks).not.toContain('menu:resources');
+    expect(callbacks).not.toContain('menu:processes');
+    expect(callbacks).not.toContain('menu:storage');
+    expect(callbacks).not.toContain('menu:scheduler');
+    expect(callbacks).not.toContain('menu:jobs');
+    expect(callbacks).not.toContain('menu:logs');
+    expect(callbacks).not.toContain('menu:audit');
   });
 
   it('opens the model menu on /model', async () => {
@@ -416,6 +461,32 @@ describe('ControlPanel', () => {
     const labels = keyboard?.inline_keyboard.flat().map((b) => b.text) ?? [];
     expect(labels.some((l) => l.includes('About'))).toBe(true);
     expect(findBackButton(keyboard)?.callback_data).toBe('menu:main');
+  });
+});
+
+describe('ensureTelegramText', () => {
+  it('keeps real visible text unchanged', () => {
+    const real = '⚡ <b>NEXUS VPS</b>\n\n<b>Control Center</b>';
+    expect(ensureTelegramText(real)).toBe(real);
+  });
+
+  it('falls back to the Control Center text for empty or whitespace input', () => {
+    for (const input of ['', '   ', '\n\t ']) {
+      const fallback = ensureTelegramText(input);
+      expect(fallback).toContain('NEXUS VPS');
+      expect(fallback).toContain('Control Center');
+      expect(stripControl(fallback).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('falls back for invisible-only placeholders', () => {
+    const zwsp = String.fromCharCode(0x200b);
+    const nbsp = String.fromCharCode(0xa0);
+    const bom = String.fromCharCode(0xfeff);
+    const invisibleOnly = zwsp + ' ' + nbsp + bom;
+    expect(stripControl(invisibleOnly).length).toBe(0);
+    const fallback = ensureTelegramText(invisibleOnly);
+    expect(fallback).toContain('NEXUS VPS');
   });
 });
 
