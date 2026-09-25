@@ -52,6 +52,7 @@ export class TelegramFormatter {
       if (formatted.length > 0) return formatted;
     }
 
+    if (looksLikeMarkdownTable(response)) return this.formatGeneric(response, options);
     if (looksLikeSystemInfo(response)) return this.formatSystemInfo(response, options);
     if (looksLikeResources(response)) return this.formatResources(response, options);
     if (looksLikeSpeedtest(response)) return this.formatSpeedtest(response, options);
@@ -350,7 +351,7 @@ export class TelegramFormatter {
     // Fast path: short plain text without any markdown-looking content.
     // Plain-text responses containing '*' still go through conversion below so
     // stray Markdown asterisks are never shown literally.
-    if (!/(\*\*|`|```|^[-*]\s+|^#{1,6}\s+|^\d+\.\s+|\*[^*\n]+\*)/m.test(response)) {
+    if (!/(\*\*|`|```|^[-*]\s+|^#{1,6}\s+|^\d+\.\s+|^\|.*\|$)/m.test(response)) {
       // Plain text with no markup; keep it simple and do not force a footer.
       return splitMessage(response, MAX_CHUNK_LENGTH).map((chunk) => ({
         text: chunk,
@@ -575,6 +576,10 @@ function extractPreformattedBlock(text: string): string | undefined {
   return match ? match[1].trim() : undefined;
 }
 
+function looksLikeMarkdownTable(text: string): boolean {
+  return /^\s*\|[^\n]+\|[^\n]+\|/m.test(text);
+}
+
 function looksLikeSystemInfo(text: string): boolean {
   const lower = text.toLowerCase();
   return (lower.includes('hostname') && lower.includes('platform')) || (lower.includes('hostname') && lower.includes('kernel'));
@@ -614,8 +619,132 @@ function looksLikeError(text: string, options: FormatOptions): boolean {
   return options.finishReason === 'error' || /^error[：:]/i.test(text);
 }
 
+function convertMarkdownTables(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    if (isTableRow(lines[i])) {
+      const blockStart = i;
+      let blockEnd = i;
+      while (blockEnd < lines.length && isTableRow(lines[blockEnd])) {
+        blockEnd++;
+      }
+      const table = parseTable(lines.slice(blockStart, blockEnd));
+      if (table) {
+        out.push(formatTable(table));
+        i = blockEnd;
+        continue;
+      }
+    }
+    out.push(lines[i]);
+    i++;
+  }
+
+  return out.join('\n');
+}
+
+function isTableRow(line: string): boolean {
+  return /^\s*\|.+\|\s*$/.test(line);
+}
+
+function parseTableCells(line: string): string[] {
+  const parts = line.split('|').map((cell) => cell.trim());
+  // Drop empty leading/trailing cells caused by the outer pipes.
+  if (parts[0] === '') parts.shift();
+  if (parts[parts.length - 1] === '') parts.pop();
+  return parts;
+}
+
+function isSeparatorRow(line: string): boolean {
+  const cells = parseTableCells(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
+}
+
+interface ParsedTable {
+  header: string[];
+  rows: string[][];
+}
+
+function parseTable(lines: string[]): ParsedTable | undefined {
+  if (lines.length < 3) return undefined;
+  const header = parseTableCells(lines[0]);
+  if (!isSeparatorRow(lines[1])) return undefined;
+  const rows: string[][] = [];
+  for (let i = 2; i < lines.length; i++) {
+    const cells = parseTableCells(lines[i]);
+    if (cells.length > 0) rows.push(cells);
+  }
+  if (rows.length === 0) return undefined;
+  return { header, rows };
+}
+
+function formatTable(table: ParsedTable): string {
+  const header = table.header.map((h) => h.toLowerCase());
+
+  // Disk usage table: render a compact per-mount summary.
+  if (
+    header.includes('filesystem') ||
+    (header.includes('size') && header.includes('used') && header.includes('avail'))
+  ) {
+    const fsIdx = Math.max(0, header.findIndex((h) => h.includes('filesystem')));
+    const sizeIdx = header.findIndex((h) => h.includes('size'));
+    const usedIdx = header.findIndex((h) => h.includes('used'));
+    const availIdx = header.findIndex((h) => h.includes('avail'));
+    const useIdx = header.findIndex((h) => h.includes('use%') || h.includes('%'));
+
+    const lines: string[] = [];
+    for (const row of table.rows) {
+      const mount = stripMarkdown(row[fsIdx] ?? '');
+      const size = sizeIdx >= 0 ? stripMarkdown(row[sizeIdx] ?? '') : '';
+      const used = usedIdx >= 0 ? stripMarkdown(row[usedIdx] ?? '') : '';
+      const avail = availIdx >= 0 ? stripMarkdown(row[availIdx] ?? '') : '';
+      const use = useIdx >= 0 ? stripMarkdown(row[useIdx] ?? '') : '';
+
+      const parts: string[] = [];
+      if (size) parts.push(`${size} total`);
+      if (used) parts.push(`${used} used`);
+      if (avail) parts.push(`${avail} free`);
+      if (use) parts.push(use);
+
+      const suffix = parts.length > 0 ? ` — ${parts.join(' · ')}` : '';
+      lines.push(`${code(mount)}${suffix}`);
+    }
+    return lines.join('\n');
+  }
+
+  // Swap table: render as a dedicated warning section.
+  if (header[0]?.toLowerCase() === 'swap' || header.includes('swap')) {
+    const valueIdx = header.length > 1 ? 1 : 0;
+    const values = table.rows.map((row) => stripMarkdown(row[valueIdx] ?? '')).filter(Boolean);
+    return values.length > 0 ? values.join('\n') : 'Tidak tersedia';
+  }
+
+  // Two-column tables are treated as key/value pairs.
+  if (table.header.length === 2) {
+    return table.rows
+      .map((row) => {
+        const key = stripMarkdown(row[0] ?? '');
+        const value = stripMarkdown(row[1] ?? '');
+        if (!value) return `${key}`;
+        return `${key}: ${code(value)}`;
+      })
+      .join('\n');
+  }
+
+  // Generic multi-column table: first column is the key, remaining columns are values.
+  return table.rows
+    .map((row) => {
+      const key = stripMarkdown(row[0] ?? '');
+      const values = row.slice(1).map((cell) => code(stripMarkdown(cell ?? '')));
+      return `• ${key}: ${values.join(' · ')}`;
+    })
+    .join('\n');
+}
+
 function markdownToHtml(text: string): string | undefined {
-  if (!/(\*\*|`|```|^[-*]\s+|^#{1,6}\s+|^\d+\.\s+)/m.test(text)) {
+  if (!/(\*\*|`|```|^[-*]\s+|^#{1,6}\s+|^\d+\.\s+|^\|.*\|$)/m.test(text)) {
     return undefined;
   }
 
@@ -632,6 +761,11 @@ function markdownToHtml(text: string): string | undefined {
   html = html.replace(/```(?:\w*\n)?([\s\S]*?)```/g, (_, content: string) =>
     pushPlaceholder(pre(content.trim())),
   );
+
+  // Convert Markdown tables before other inline markup so table cell values
+  // can be cleaned and rendered as structured Telegram text.
+  html = convertMarkdownTables(html);
+
   html = html.replace(/`([^`\n]+)`/g, (_, content: string) => pushPlaceholder(code(content)));
   html = html.replace(/\*\*(.+?)\*\*/g, (_, content: string) => pushPlaceholder(bold(content)));
   // Single-asterisk emphasis pairs (`*text*`) have no meaning in Telegram HTML

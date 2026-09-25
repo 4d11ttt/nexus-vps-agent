@@ -339,6 +339,143 @@ describe('TelegramFormatter', () => {
     });
   });
 
+  describe('markdown tables', () => {
+    it('converts a generic two-column table to key/value lines', () => {
+      const input =
+        '| Item | Nilai |\n' +
+        '|---|---|\n' +
+        '| Hostname | armbian |\n' +
+        '| OS | Armbian OS 26.11.0 |';
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).not.toContain('|');
+      expect(html).not.toContain('---');
+      expect(html).toContain('Hostname: <code>armbian</code>');
+      expect(html).toContain('OS: <code>Armbian OS 26.11.0</code>');
+    });
+
+    it('converts a disk usage table to a compact structured section', () => {
+      const input =
+        '## 💾 Disk\n\n' +
+        '| Filesystem | Size | Used | Avail | Use% |\n' +
+        '|---|---|---|---|---|\n' +
+        '| / | 15G | 2.6G | 12G | 18% |\n' +
+        '| /boot | 510M | 172M | 339M | 34% |';
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).not.toContain('|');
+      expect(html).toContain('<b>💾 Disk</b>');
+      expect(html).toContain('<code>/</code> — 15G total · 2.6G used · 12G free · 18%');
+      expect(html).toContain('<code>/boot</code> — 510M total · 172M used · 339M free · 34%');
+    });
+
+    it('converts a swap table to a warning section', () => {
+      const input =
+        '## ⚠️ Swap\n\n' +
+        '| Swap | Status |\n' +
+        '|---|---|\n' +
+        '| Swap | Tidak tersedia |';
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).not.toContain('|');
+      expect(html).toContain('<b>⚠️ Swap</b>');
+      expect(html).toContain('Tidak tersedia');
+    });
+
+    it('strips markdown artifacts from table cells', () => {
+      const input =
+        '| Item | Nilai |\n' +
+        '|---|---|\n' +
+        '| **Hostname** | `armbian` |';
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).not.toContain('**');
+      expect(html).not.toContain('`');
+      expect(html).toContain('Hostname: <code>armbian</code>');
+    });
+  });
+
+  describe('server status formatting', () => {
+    it('renders a full Markdown server status report cleanly', () => {
+      const input =
+        '## 🖥️ Status Server\n\n' +
+        '| Item | Nilai |\n' +
+        '|---|---|\n' +
+        '| Hostname | armbian |\n' +
+        '| OS | Armbian OS 26.11.0 |\n' +
+        '| Architecture | aarch64 |\n' +
+        '| CPU | 4 core |\n' +
+        '| RAM | 1.9 GiB |\n' +
+        '| Uptime | 16 jam 29 menit |\n' +
+        '| Load | 0.09 / 0.15 / 0.14 |\n\n' +
+        '## 💾 Disk\n\n' +
+        '| Filesystem | Size | Used | Avail | Use% |\n' +
+        '|---|---|---|---|---|\n' +
+        '| / | 15G | 2.6G | 12G | 18% |\n' +
+        '| /boot | 510M | 172M | 339M | 34% |\n\n' +
+        '## ⚠️ Swap\n\n' +
+        'Tidak tersedia';
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).not.toContain('|');
+      expect(html).not.toContain('---');
+      expect(html).not.toContain('##');
+      expect(html).toContain('<b>🖥️ Status Server</b>');
+      expect(html).toContain('Hostname: <code>armbian</code>');
+      expect(html).toContain('OS: <code>Armbian OS 26.11.0</code>');
+      expect(html).toContain('Architecture: <code>aarch64</code>');
+      expect(html).toContain('CPU: <code>4 core</code>');
+      expect(html).toContain('RAM: <code>1.9 GiB</code>');
+      expect(html).toContain('Uptime: <code>16 jam 29 menit</code>');
+      expect(html).toContain('Load: <code>0.09 / 0.15 / 0.14</code>');
+      expect(html).toContain('<b>💾 Disk</b>');
+      expect(html).toContain('<code>/</code> — 15G total · 2.6G used · 12G free · 18%');
+      expect(html).toContain('<b>⚠️ Swap</b>');
+      expect(html).toContain('Tidak tersedia');
+    });
+  });
+
+  describe('memory formatting', () => {
+    it('formats a memory table as key/value lines', () => {
+      const input =
+        '| Memory | Nilai |\n' +
+        '|---|---|\n' +
+        '| Total | 1.9 GiB |\n' +
+        '| Used | 246 MiB |\n' +
+        '| Free | 1.6 GiB |';
+
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).not.toContain('|');
+      expect(html).toContain('Total: <code>1.9 GiB</code>');
+      expect(html).toContain('Used: <code>246 MiB</code>');
+      expect(html).toContain('Free: <code>1.6 GiB</code>');
+    });
+  });
+
+  describe('raw terminal output', () => {
+    it('keeps genuine terminal output inside pre tags', () => {
+      const input = 'Output:\n```\n$ df -h\nFilesystem      Size  Used Avail Use%\n/               15G  2.6G   12G  18%\n/boot           510M  172M  339M  34%\n```';
+      const chunks = formatter.formatResponse(input, { finishReason: 'completed' });
+      const html = chunks.map((c) => c.text).join('\n');
+
+      expect(html).toContain('<pre>');
+      expect(html).toContain('df -h');
+      expect(html).toContain('Filesystem');
+    });
+  });
+
   describe('edge cases', () => {
     it('returns a default message for empty input', () => {
       const chunks = formatter.formatResponse('');
